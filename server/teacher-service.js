@@ -103,10 +103,6 @@ function validateExam(input) {
       mcQuestionCount + essayQuestionCount < 1 || mcQuestionCount + essayQuestionCount > 500) {
     throw new ApiError(400, "Jumlah soal ujian tidak valid.");
   }
-  if (!Array.isArray(input.questionIds) || input.questionIds.length > 500 ||
-      input.questionIds.some((id) => typeof id !== "string" || !id)) {
-    throw new ApiError(400, "Pilihan soal tidak valid.");
-  }
   if (!Array.isArray(input.classIds) || input.classIds.some((id) => typeof id !== "string")) {
     throw new ApiError(400, "Pilihan kelas tidak valid.");
   }
@@ -162,11 +158,47 @@ function validateExam(input) {
     randomizeOptions: input.randomizeOptions !== false,
     autoGrade: input.autoGrade !== false,
     showScore: input.showScore !== false,
-    questionIds: input.questionIds,
     classIds: input.classIds,
     opensAt: input.opensAt,
     closesAt: input.closesAt,
   };
+}
+
+function validateExamQuestions(input, exam) {
+  if (!Array.isArray(input?.questions) || input.questions.length < 1 ||
+      input.questions.length > 500) {
+    throw new ApiError(400, "Daftar soal ujian tidak valid.");
+  }
+  const questions = input.questions.map((question) => {
+    const validated = validateQuestion({
+      academicYear: exam.academicYear,
+      subject: exam.subject,
+      gradeLevel: exam.gradeLevel,
+      chapter: exam.title,
+      difficulty: "sedang",
+      type: question?.type,
+      prompt: question?.prompt,
+      answerKey: question?.answerKey,
+      points: question?.points,
+      options: question?.options,
+    });
+    return {
+      type: validated.type,
+      prompt: validated.prompt,
+      answerKey: validated.answerKey,
+      points: validated.points,
+      options: validated.options,
+    };
+  });
+  const mcQuestionCount = questions.filter((question) =>
+    !["essay", "short_answer"].includes(question.type),
+  ).length;
+  const essayQuestionCount = questions.length - mcQuestionCount;
+  if (exam.mcQuestionCount !== mcQuestionCount ||
+      exam.essayQuestionCount !== essayQuestionCount) {
+    throw new ApiError(400, "Jumlah soal pilihan ganda dan essay tidak sesuai.");
+  }
+  return questions;
 }
 
 export function createTeacherService(model, { now = () => new Date() } = {}) {
@@ -218,61 +250,6 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
     },
     async dashboard(user) {
       return model.getDashboard(await getProfile(user));
-    },
-    async listQuestions(user, filters) {
-      return model.listQuestions(await getProfile(user), filters);
-    },
-    async getQuestion(user, id) {
-      const question = await model.getQuestion(id, (await getProfile(user)).id);
-      if (!question) throw new ApiError(404, "Soal tidak ditemukan.");
-      return { question };
-    },
-    async createQuestion(user, input) {
-      const profile = await getProfile(user);
-      const validated = validateQuestion({ ...input, subject: input?.subject ?? profile.subject });
-      await requireSchoolSubject(profile, validated.subject);
-      const question = await model.createQuestion(profile, validated, now().toISOString());
-      return { question };
-    },
-    async importQuestions(user, input) {
-      if (!Array.isArray(input?.questions) || input.questions.length < 1 ||
-          input.questions.length > 100) {
-        throw new ApiError(400, "Import harus berisi 1 sampai 100 soal.");
-      }
-      const profile = await getProfile(user);
-      const questions = input.questions.map((question) =>
-        validateQuestion({ ...question, subject: question?.subject ?? profile.subject }),
-      );
-      await Promise.all([...new Set(questions.map((question) => question.subject))]
-        .map((subject) => requireSchoolSubject(profile, subject)));
-      return {
-        questions: await model.createQuestions(
-          profile,
-          questions,
-          now().toISOString(),
-        ),
-      };
-    },
-    async updateQuestion(user, id, input) {
-      const profile = await getProfile(user);
-      const validated = validateQuestion({ ...input, subject: input?.subject ?? profile.subject });
-      await requireSchoolSubject(profile, validated.subject);
-      const question = await model.updateQuestion(id, profile, validated);
-      if (!question) throw new ApiError(404, "Soal tidak ditemukan.");
-      return { question };
-    },
-    async deleteQuestion(user, id) {
-      try {
-        const deleted = await model.deleteQuestion(id, await getProfile(user));
-        if (!deleted) throw new ApiError(404, "Soal tidak ditemukan.");
-        return { deleted: true };
-      } catch (error) {
-        if (error instanceof ApiError) throw error;
-        if (error.code === "23503") {
-          throw new ApiError(409, "Soal masih memiliki data terkait yang belum dapat dibersihkan.");
-        }
-        throw error;
-      }
     },
     async listClasses(user) {
       return { classes: await model.listClasses(await getProfile(user)) };
@@ -359,47 +336,14 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       }
       const validated = validateExam({
         ...input,
-        questionIds: input?.questionIds ?? [],
         classIds: input?.classIds,
       });
       const profile = await getProfile(user);
       await requireSchoolSubject(profile, validated.subject);
-      if (!Array.isArray(input?.questions) || input.questions.length < 1 ||
-          input.questions.length > 500) {
-        throw new ApiError(400, "Daftar soal ujian tidak valid.");
-      }
+      const questions = validateExamQuestions(input, validated);
       if (!input.opensAt || !input.closesAt ||
           Date.parse(input.closesAt) <= Date.parse(input.opensAt)) {
         throw new ApiError(400, "Waktu selesai harus setelah waktu mulai.");
-      }
-      const questions = input.questions.map((question) => {
-        const validatedQuestion = validateQuestion({
-          academicYear: validated.academicYear,
-          subject: validated.subject,
-          gradeLevel: validated.gradeLevel,
-          chapter: validated.title,
-          difficulty: "sedang",
-          type: question?.type,
-          prompt: question?.prompt,
-          answerKey: question?.answerKey,
-          points: question?.points,
-          options: question?.options,
-        });
-        return {
-          type: validatedQuestion.type,
-          prompt: validatedQuestion.prompt,
-          answerKey: validatedQuestion.answerKey,
-          points: validatedQuestion.points,
-          options: validatedQuestion.options,
-        };
-      });
-      const mcQuestionCount = questions.filter((question) =>
-        !["essay", "short_answer"].includes(question.type),
-      ).length;
-      const essayQuestionCount = questions.length - mcQuestionCount;
-      if (validated.mcQuestionCount !== mcQuestionCount ||
-          validated.essayQuestionCount !== essayQuestionCount) {
-        throw new ApiError(400, "Jumlah soal pilihan ganda dan essay tidak sesuai.");
       }
       const code = typeof input.code === "string" && input.code.trim()
         ? input.code.trim().toUpperCase()
@@ -467,17 +411,15 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       try {
         const validated = validateExam({ ...input, subject: input?.subject ?? profile.subject });
         await requireSchoolSubject(profile, validated.subject);
+        const questions = validateExamQuestions(input, validated);
         return {
           exam: await model.createExam(
             profile,
-            validated,
+            { ...validated, questions },
             now().toISOString(),
           ),
         };
       } catch (error) {
-        if (error.message === "SOAL_BANK_INVALID") {
-          throw new ApiError(400, "Soal yang dipilih tidak tersedia di bank soal Anda.");
-        }
         if (error.message === "CLASS_INVALID") {
           throw new ApiError(400, "Kelas yang dipilih tidak tersedia di sekolah Anda.");
         }

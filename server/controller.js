@@ -243,24 +243,6 @@ export function createController(service, teacherService, adminService, cookieOp
           await readJson(request),
         ));
       }
-      if (method === "GET" && path === "/api/teacher/questions") {
-        return sendJson(response, 200, await teacherService.listQuestions(teacher, {
-          subject: url.searchParams.get("subject") ?? "",
-          gradeLevel: url.searchParams.get("gradeLevel") ?? "",
-          chapter: url.searchParams.get("chapter") ?? "",
-          difficulty: url.searchParams.get("difficulty") ?? "",
-          type: url.searchParams.get("type") ?? "",
-          search: url.searchParams.get("search") ?? "",
-          page: url.searchParams.get("page") ?? "1",
-          pageSize: url.searchParams.get("pageSize") ?? "10",
-        }));
-      }
-      if (method === "POST" && path === "/api/teacher/questions") {
-        return sendJson(response, 201, await teacherService.createQuestion(teacher, await readJson(request)));
-      }
-      if (method === "POST" && path === "/api/teacher/questions/import") {
-        return sendJson(response, 201, await teacherService.importQuestions(teacher, await readJson(request)));
-      }
       if (method === "GET" && path === "/api/teacher/participants") {
         return sendJson(response, 200, await teacherService.participants(teacher));
       }
@@ -309,26 +291,6 @@ export function createController(service, teacherService, adminService, cookieOp
         ));
       }
 
-      const questionRoute = path.match(/^\/api\/teacher\/questions\/([^/]+)$/);
-      if (method === "GET" && questionRoute) {
-        return sendJson(response, 200, await teacherService.getQuestion(
-          teacher,
-          decodeURIComponent(questionRoute[1]),
-        ));
-      }
-      if (method === "PUT" && questionRoute) {
-        return sendJson(response, 200, await teacherService.updateQuestion(
-          teacher,
-          decodeURIComponent(questionRoute[1]),
-          await readJson(request),
-        ));
-      }
-      if (method === "DELETE" && questionRoute) {
-        return sendJson(response, 200, await teacherService.deleteQuestion(
-          teacher,
-          decodeURIComponent(questionRoute[1]),
-        ));
-      }
       const examActionRoute = path.match(
         /^\/api\/teacher\/exams\/([^/]+)\/(participants|publish|analytics)$/,
       );

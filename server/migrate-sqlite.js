@@ -46,8 +46,6 @@ export async function migrateSqliteData(sourcePath, pool) {
       attempts: readTable(source, "exam_attempts"),
       answers: readTable(source, "exam_answers"),
       results: readTable(source, "exam_results"),
-      questionBank: readTable(source, "question_bank"),
-      questionOptions: readTable(source, "question_bank_options"),
       teacherSettings: readTable(source, "teacher_exam_settings"),
       examClasses: readTable(source, "exam_classes"),
       analytics: readTable(source, "exam_question_analytics"),
@@ -69,14 +67,13 @@ export async function migrateSqliteData(sourcePath, pool) {
       ...tables.users.map((row) => row.school_id).filter(Boolean),
       ...tables.teacherProfiles.map((row) => row.school_id).filter(Boolean),
       ...tables.teacherClasses.map((row) => row.school_id).filter(Boolean),
-      ...tables.questionBank.map((row) => row.school_id).filter(Boolean),
       ...tables.teacherSettings.map((row) => row.school_id).filter(Boolean),
       ...exams.map((row) => row.school_id).filter(Boolean),
     ]);
     const schoolsById = new Map(tables.schools.map((row) => [row.id, row]));
     const schoolNames = new Map(tables.schools.map((row) => [row.id, row.name]));
     const subjects = new Map();
-    for (const row of [...tables.teacherProfiles, ...tables.questionBank, ...exams]) {
+    for (const row of [...tables.teacherProfiles, ...exams]) {
       if (row.school_id && row.subject) {
         subjects.set(subjectKey(row.school_id, row.subject), {
           id: subjectId(row.school_id, row.subject),
@@ -156,26 +153,6 @@ export async function migrateSqliteData(sourcePath, pool) {
           row.status, row.duration_minutes, row.opens_at, row.closes_at, row.created_at,
         ]);
       }
-      for (const row of tables.questionBank) {
-        await client.query(`
-          INSERT INTO question_bank (id, teacher_id, school_id, subject_id, academic_year,
-            subject, grade_level, chapter, difficulty, type, prompt, answer_key, explanation, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-          ON CONFLICT (id) DO NOTHING
-        `, [
-          row.id, row.teacher_id, row.school_id, subjectId(row.school_id, row.subject),
-          row.academic_year, row.subject, row.grade_level, row.chapter, row.difficulty,
-          row.type, row.prompt, row.answer_key, row.explanation, row.created_at,
-        ]);
-      }
-      for (const row of tables.questionOptions) {
-        await client.query(`
-          INSERT INTO question_bank_options (id, question_id, position, label, content, is_correct)
-          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING
-        `, [
-          row.id, row.question_id, row.position, row.label, row.content, asBoolean(row.is_correct),
-        ]);
-      }
       for (const row of tables.teacherSettings) {
         await client.query(`
           INSERT INTO teacher_exam_settings (exam_id, teacher_id, school_id, academic_year,
@@ -191,13 +168,16 @@ export async function migrateSqliteData(sourcePath, pool) {
       }
       for (const row of tables.examQuestions) {
         await client.query(`
-          INSERT INTO exam_questions (id, exam_id, position, prompt, type,
-            bank_question_id, points, requires_manual_grading)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          INSERT INTO exam_questions (
+            id, exam_id, position, prompt, type, points, answer_key,
+            requires_manual_grading, school_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           ON CONFLICT (id) DO NOTHING
         `, [
           row.id, row.exam_id, row.position, row.prompt, row.type,
-          row.bank_question_id ?? null, row.points ?? 1, asBoolean(row.requires_manual_grading),
+          row.points ?? 1, row.answer_key ?? "",
+          asBoolean(row.requires_manual_grading),
+          row.school_id ?? examSchool.get(row.exam_id) ?? null,
         ]);
       }
       for (const row of tables.examOptions) {

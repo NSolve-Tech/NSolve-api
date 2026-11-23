@@ -135,19 +135,7 @@ All `/api/teacher/*` routes require a teacher session. Exam targets may include 
 
 ### `GET /api/teacher/dashboard`
 
-Returns the teacher profile, real counts for active exams, bank questions, assigned students and classes, upcoming and recent exams, and remedial requests for that teacher's exams.
-
-### `GET /api/teacher/questions`
-
-Lists the teacher's school-scoped question bank. Optional query filters: `subject`, `gradeLevel`, `chapter`, `difficulty`, `type`, and `search`.
-
-### `POST /api/teacher/questions`
-
-Creates a question in the bank. Supported types: `multiple_choice`, `multiple_choice_complex`, `true_false`, `matching`, `short_answer`, and `essay`. Body fields include `academicYear`, `gradeLevel`, `chapter`, `difficulty`, `type`, `prompt`, `answerKey`, `explanation`, and `options`.
-
-### `GET /api/teacher/questions/:id`
-
-Returns the selected question and answer options for its owner.
+Returns the teacher profile, counts for active exams, assigned students and classes, upcoming and recent exams, and remedial requests for that teacher's exams.
 
 ### `GET /api/teacher/classes`
 
@@ -167,7 +155,7 @@ Lists the teacher's exam packages with draft, scheduled, active, or completed st
 
 ### `POST /api/teacher/exams`
 
-Creates a draft exam package using existing bank question IDs and any class IDs from the teacher's school. Supports academic year, semester, grade, duration, target multiple-choice and essay counts, and question/option randomization.
+Creates a draft exam package with questions saved directly to that exam and any class IDs from the teacher's school. Supports academic year, semester, grade, duration, target multiple-choice and essay counts, and question/option randomization. Each item in `questions` includes `type`, `prompt`, `answerKey`, `points`, and an `options` array of `{ "label", "content", "isCorrect" }`.
 
 The exam's KKM is stored with its settings and is used to calculate student pass/remedial status. When question randomization is enabled, each attempt receives a stable order that is reused for review.
 
@@ -236,4 +224,4 @@ Errors use `{ "error": "..." }`. Common statuses: `400` invalid input, `401` aut
 
 See [README.md](../README.md) for PostgreSQL development setup, Railway/Supabase configuration, migrations, seed data, and importing an existing SQLite database. Set `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, and `DATABASE_SSL`; alternatively use a PostgreSQL `DATABASE_URL`. Run `npm run migrate` before starting the API.
 
-Production starts without demo questions/exams; provision teacher accounts and populate the school's question bank before opening exams. Local development seeds the named Emma Murniati, SMAN 2 Kota Lubuk Linggau scenario, including the three XII IPA classes and a UTS Kimia draft. For multiple API replicas, use a shared production database and a shared rate-limit store before scaling out. In cross-site deployments, set `COOKIE_SAME_SITE=None` and `COOKIE_SECURE=true`, and serve both applications over HTTPS.
+Production starts without demo questions or exams. Local development seeds the named Emma Murniati, SMAN 2 Kota Lubuk Linggau scenario and its standard classes. For multiple API replicas, use a shared production database and a shared rate-limit store before scaling out. In cross-site deployments, set `COOKIE_SAME_SITE=None` and `COOKIE_SECURE=true`, and serve both applications over HTTPS.

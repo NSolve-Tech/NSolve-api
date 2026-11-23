@@ -413,25 +413,6 @@ export function createAdminModel(database) {
       "DELETE FROM remedial_requests WHERE school_id = $1 AND teacher_id = ANY($2::text[])",
       [schoolId, teacherIds],
     );
-    const { rows: questions } = await client.query(`
-      SELECT id FROM questions
-      WHERE school_id = $1 AND teacher_id = ANY($2::text[])
-    `, [schoolId, teacherIds]);
-    const questionIds = questions.map((question) => question.id);
-    if (questionIds.length) {
-      await client.query(
-        "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
-        [questionIds],
-      );
-      await client.query(
-        "DELETE FROM questions WHERE school_id = $1 AND id = ANY($2::text[])",
-        [schoolId, questionIds],
-      );
-    }
-    await client.query(
-      "DELETE FROM question_bank WHERE school_id = $1 AND teacher_id = ANY($2::text[])",
-      [schoolId, teacherIds],
-    );
     await client.query(
       "DELETE FROM teachers WHERE school_id = $1 AND id = ANY($2::text[])",
       [schoolId, teacherIds],
@@ -574,25 +555,6 @@ export function createAdminModel(database) {
         [subjectId, schoolId],
       );
       await deleteExams(client, schoolId, exams.map((exam) => exam.id));
-      const { rows: questions } = await client.query(
-        "SELECT id FROM questions WHERE subject_id = $1 AND school_id = $2",
-        [subjectId, schoolId],
-      );
-      const questionIds = questions.map((question) => question.id);
-      if (questionIds.length) {
-        await client.query(
-          "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
-          [questionIds],
-        );
-        await client.query(
-          "DELETE FROM questions WHERE subject_id = $1 AND school_id = $2",
-          [subjectId, schoolId],
-        );
-      }
-      await client.query(
-        "DELETE FROM question_bank WHERE subject_id = $1 AND school_id = $2",
-        [subjectId, schoolId],
-      );
       await client.query(`
         UPDATE teachers SET subject_id = NULL, subject = 'Umum'
         WHERE subject_id = $1 AND school_id = $2
@@ -711,8 +673,6 @@ export function createAdminModel(database) {
       await client.query("DELETE FROM exam_activity_events WHERE school_id = $1", [schoolId]);
       await client.query("DELETE FROM exam_results WHERE school_id = $1", [schoolId]);
       await client.query("DELETE FROM exam_attempts WHERE school_id = $1", [schoolId]);
-      await client.query("DELETE FROM question_bank WHERE school_id = $1", [schoolId]);
-      await client.query("DELETE FROM questions WHERE school_id = $1", [schoolId]);
       await client.query("DELETE FROM teacher_exam_settings WHERE school_id = $1", [schoolId]);
       await client.query("DELETE FROM admin_password_reset_logs WHERE school_id = $1", [schoolId]);
       await client.query(`

@@ -1,26 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { withTransaction } from "./database.js";
 
-function mapQuestion(row, options = []) {
-  return {
-    id: row.id,
-    schoolId: row.school_id,
-    schoolName: row.school_name,
-    academicYear: row.academic_year,
-    subject: row.subject,
-    gradeLevel: row.grade_level,
-    chapter: row.chapter,
-    difficulty: row.difficulty,
-    type: row.type,
-    prompt: row.prompt,
-    answerKey: row.answer_key,
-    explanation: row.explanation,
-    points: Number(row.points ?? 1),
-    createdAt: row.created_at,
-    options,
-  };
-}
-
 function mapExam(row) {
   return {
     id: row.id,
@@ -77,21 +57,6 @@ const examRows = `
 `;
 
 export function createTeacherModel(database) {
-  async function getQuestion(id, teacherId) {
-    const { rows: [row] } = await database.query(`
-      SELECT q.*, s.name AS school_name
-      FROM question_bank q JOIN schools s ON s.id = q.school_id
-      WHERE q.id = $1 AND q.teacher_id = $2
-    `, [id, teacherId]);
-    if (!row) return null;
-    const { rows: options } = await database.query(`
-      SELECT id, label, content, is_correct AS "isCorrect", position
-      FROM question_bank_options
-      WHERE question_id = $1 ORDER BY position
-    `, [id]);
-    return mapQuestion(row, options);
-  }
-
   async function getExam(id, teacherId) {
     const { rows: [row] } = await database.query(`
       ${examRows}
@@ -107,10 +72,8 @@ export function createTeacherModel(database) {
     const { rows: questions } = await database.query(`
       SELECT q.id, q.position, q.prompt, q.type, q.points,
         q.answer_key AS "answerKey",
-        q.requires_manual_grading AS "requiresManualGrading",
-        b.id AS bank_question_id
+        q.requires_manual_grading AS "requiresManualGrading"
       FROM exam_questions q
-      LEFT JOIN question_bank b ON b.id = q.bank_question_id
       WHERE q.exam_id = $1 ORDER BY q.position
     `, [id]);
     const questionDetails = await Promise.all(questions.map(async (question) => {
@@ -126,7 +89,6 @@ export function createTeacherModel(database) {
         points: Number(question.points),
         answerKey: question.answerKey,
         requiresManualGrading: question.requiresManualGrading,
-        bankQuestionId: question.bank_question_id,
         options,
       };
     }));
@@ -288,29 +250,6 @@ export function createTeacherModel(database) {
     });
   }
 
-  async function insertQuestion(client, profile, input, now) {
-    const id = randomUUID();
-    const subjectId = await ensureSubjectId(client, profile, input.subject);
-    await client.query(`
-      INSERT INTO question_bank (
-        id, teacher_id, school_id, subject_id, academic_year, subject, grade_level,
-        chapter, difficulty, type, prompt, answer_key, explanation, points, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-    `, [
-      id, profile.id, profile.schoolId, subjectId, input.academicYear, input.subject,
-      input.gradeLevel, input.chapter, input.difficulty, input.type,
-      input.prompt, input.answerKey, input.explanation, input.points, now,
-    ]);
-    for (const [index, option] of input.options.entries()) {
-      await client.query(`
-        INSERT INTO question_bank_options
-          (id, question_id, position, label, content, is_correct)
-        VALUES ($1, $2, $3, $4, $5, $6)
-      `, [randomUUID(), id, index + 1, option.label, option.content, option.isCorrect]);
-    }
-    return id;
-  }
-
   return {
     async findProfileByUserId(userId) {
       const { rows: [row] } = await database.query(`
@@ -383,7 +322,6 @@ export function createTeacherModel(database) {
           (SELECT COUNT(*)::INTEGER FROM teacher_exam_settings WHERE teacher_id = $1) AS total_exams,
           (SELECT COUNT(*)::INTEGER FROM teacher_exam_settings WHERE teacher_id = $1 AND workflow_status = 'active') AS active_exams,
           (SELECT COUNT(*)::INTEGER FROM teacher_exam_settings WHERE teacher_id = $1 AND workflow_status = 'completed') AS completed_exams,
-          (SELECT COUNT(*)::INTEGER FROM question_bank WHERE teacher_id = $1) AS total_questions,
           (SELECT COUNT(*)::INTEGER FROM teacher_classes tc
             WHERE tc.teacher_id = $1 AND tc.school_id = $2) AS total_classes,
           (SELECT COUNT(DISTINCT (ec.exam_id, cm.student_user_id))::INTEGER
@@ -403,7 +341,6 @@ export function createTeacherModel(database) {
         stats: {
           activeExams: stats.active_exams,
           completedExams: stats.completed_exams,
-          totalQuestions: stats.total_questions,
           totalStudents: stats.total_students,
           totalClasses: stats.total_classes,
           totalExams: stats.total_exams,
@@ -454,129 +391,6 @@ export function createTeacherModel(database) {
         RETURNING id
       `, [id, profile.schoolId]);
       return rows.length > 0;
-    },
-    async listQuestions(profile, filters = {}) {
-      const where = ["q.teacher_id = $1", "q.school_id = $2"];
-      const values = [profile.id, profile.schoolId];
-      for (const [field, column] of [
-        ["subject", "q.subject"],
-        ["gradeLevel", "q.grade_level"],
-        ["chapter", "q.chapter"],
-        ["difficulty", "q.difficulty"],
-        ["type", "q.type"],
-      ]) {
-        if (filters[field]) {
-          values.push(filters[field]);
-          where.push(`${column} = $${values.length}`);
-        }
-      }
-      if (filters.search) {
-        values.push(`%${filters.search}%`);
-        const searchIndex = values.length;
-        values.push(`%${filters.search}%`);
-        where.push(`(q.prompt ILIKE $${searchIndex} OR q.chapter ILIKE $${searchIndex + 1})`);
-      }
-      const { rows: [countRow] } = await database.query(`
-        SELECT COUNT(*)::INTEGER AS total
-        FROM question_bank q
-        WHERE ${where.join(" AND ")}
-      `, values);
-      const total = Number(countRow.total);
-      const page = Math.max(1, Number.parseInt(filters.page, 10) || 1);
-      const pageSize = Math.min(500, Math.max(1, Number.parseInt(filters.pageSize, 10) || 10));
-      const questionValues = [...values, pageSize, (page - 1) * pageSize];
-      const { rows } = await database.query(`
-        SELECT q.*, s.name AS school_name
-        FROM question_bank q JOIN schools s ON s.id = q.school_id
-        WHERE ${where.join(" AND ")}
-        ORDER BY q.created_at DESC, q.id
-        LIMIT $${questionValues.length - 1} OFFSET $${questionValues.length}
-      `, questionValues);
-      const questions = await Promise.all(rows.map(async (row) => {
-        const { rows: options } = await database.query(`
-          SELECT id, label, content, is_correct AS "isCorrect", position
-          FROM question_bank_options
-          WHERE question_id = $1 ORDER BY position
-        `, [row.id]);
-        return mapQuestion(row, options);
-      }));
-      return {
-        questions,
-        pagination: {
-          page,
-          pageSize,
-          total,
-          totalPages: Math.ceil(total / pageSize),
-        },
-      };
-    },
-    getQuestion,
-    async createQuestion(profile, input, now) {
-      const [id] = await withTransaction(database, async (client) => [
-        await insertQuestion(client, profile, input, now),
-      ]);
-      return getQuestion(id, profile.id);
-    },
-    async createQuestions(profile, inputs, now) {
-      const ids = await withTransaction(database, async (client) => {
-        const createdIds = [];
-        for (const input of inputs) {
-          createdIds.push(await insertQuestion(client, profile, input, now));
-        }
-        return createdIds;
-      });
-      return Promise.all(ids.map((id) => getQuestion(id, profile.id)));
-    },
-    async updateQuestion(id, profile, input) {
-      const updated = await withTransaction(database, async (client) => {
-        const subjectId = await ensureSubjectId(client, profile, input.subject);
-        const { rows } = await client.query(`
-          UPDATE question_bank SET
-            academic_year = $1, subject_id = $2, subject = $3, grade_level = $4,
-            chapter = $5, difficulty = $6, type = $7, prompt = $8,
-            answer_key = $9, explanation = $10, points = $11
-          WHERE id = $12 AND teacher_id = $13 AND school_id = $14
-          RETURNING id
-        `, [
-          input.academicYear, subjectId, input.subject, input.gradeLevel, input.chapter,
-          input.difficulty, input.type, input.prompt, input.answerKey, input.explanation, input.points,
-          id, profile.id, profile.schoolId,
-        ]);
-        if (!rows.length) return false;
-        await client.query("DELETE FROM question_bank_options WHERE question_id = $1", [id]);
-        for (const [index, option] of input.options.entries()) {
-          await client.query(`
-            INSERT INTO question_bank_options
-              (id, question_id, position, label, content, is_correct)
-            VALUES ($1, $2, $3, $4, $5, $6)
-          `, [randomUUID(), id, index + 1, option.label, option.content, option.isCorrect]);
-        }
-        return true;
-      });
-      return updated ? getQuestion(id, profile.id) : null;
-    },
-    async deleteQuestion(id, profile) {
-      return withTransaction(database, async (client) => {
-        const { rows: [question] } = await client.query(`
-          SELECT id FROM question_bank
-          WHERE id = $1 AND teacher_id = $2 AND school_id = $3
-          FOR UPDATE
-        `, [id, profile.id, profile.schoolId]);
-        if (!question) return false;
-        await client.query(
-          "UPDATE exam_questions SET bank_question_id = NULL WHERE bank_question_id = $1",
-          [id],
-        );
-        await client.query(
-          "DELETE FROM question_bank_options WHERE question_id = $1",
-          [id],
-        );
-        await client.query(
-          "DELETE FROM question_bank WHERE id = $1 AND teacher_id = $2 AND school_id = $3",
-          [id, profile.id, profile.schoolId],
-        );
-        return true;
-      });
     },
     async listExams(profile) {
       await markCompletedExams(profile.id, new Date());
@@ -713,20 +527,6 @@ export function createTeacherModel(database) {
           FOR UPDATE OF e
         `, [id, profile.schoolId, profile.id]);
         if (!exam) return false;
-        const { rows: bankQuestions } = await client.query(`
-          SELECT DISTINCT qb.id
-          FROM exam_questions eq
-          JOIN question_bank qb ON qb.id = eq.bank_question_id
-          WHERE eq.exam_id = $1 AND qb.teacher_id = $2 AND qb.school_id = $3
-        `, [id, profile.id, profile.schoolId]);
-        const bankQuestionIds = bankQuestions.map((question) => question.id);
-        const { rows: importedQuestions } = await client.query(`
-          SELECT DISTINCT q.id
-          FROM exam_questions eq
-          JOIN questions q ON q.id = eq.imported_question_id
-          WHERE eq.exam_id = $1 AND q.teacher_id = $2 AND q.school_id = $3
-        `, [id, profile.id, profile.schoolId]);
-        const importedQuestionIds = importedQuestions.map((question) => question.id);
         await client.query(`
           DELETE FROM remedial_requests
           WHERE school_id = $1 AND (exam_id = $2 OR scheduled_exam_id = $2)
@@ -743,30 +543,6 @@ export function createTeacherModel(database) {
           "DELETE FROM exams WHERE id = $1 AND school_id = $2",
           [id, profile.schoolId],
         );
-        if (bankQuestionIds.length) {
-          await client.query(
-            "UPDATE exam_questions SET bank_question_id = NULL WHERE bank_question_id = ANY($1::text[])",
-            [bankQuestionIds],
-          );
-          await client.query(
-            "DELETE FROM question_bank_options WHERE question_id = ANY($1::text[])",
-            [bankQuestionIds],
-          );
-          await client.query(
-            "DELETE FROM question_bank WHERE id = ANY($1::text[]) AND teacher_id = $2 AND school_id = $3",
-            [bankQuestionIds, profile.id, profile.schoolId],
-          );
-        }
-        if (importedQuestionIds.length) {
-          await client.query(
-            "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
-            [importedQuestionIds],
-          );
-          await client.query(
-            "DELETE FROM questions WHERE id = ANY($1::text[]) AND teacher_id = $2 AND school_id = $3",
-            [importedQuestionIds, profile.id, profile.schoolId],
-          );
-        }
         return true;
       });
     },
@@ -779,17 +555,6 @@ export function createTeacherModel(database) {
       );
       await withTransaction(database, async (client) => {
         const subjectId = await ensureSubjectId(client, profile, input.subject);
-        const questionIds = [...new Set(input.questionIds)];
-        const { rows: questionRows } = questionIds.length
-          ? await client.query(`
-            SELECT q.*, s.name AS school_name
-            FROM question_bank q JOIN schools s ON s.id = q.school_id
-            WHERE q.teacher_id = $1 AND q.school_id = $2 AND q.id = ANY($3::text[])
-            ORDER BY q.created_at, q.id
-          `, [profile.id, profile.schoolId, questionIds])
-          : { rows: [] };
-        if (questionRows.length !== questionIds.length) throw new Error("SOAL_BANK_INVALID");
-
         const classIds = [...new Set(input.classIds)];
         const { rows: classes } = classIds.length
           ? await client.query(`
@@ -823,27 +588,27 @@ export function createTeacherModel(database) {
           input.randomizeQuestions, input.randomizeOptions, input.autoGrade, input.examType,
           input.visibility, input.kkm, input.showScore,
         ]);
-        for (const [index, question] of questionRows.entries()) {
+        for (const [index, question] of input.questions.entries()) {
           const examQuestionId = randomUUID();
           await client.query(`
             INSERT INTO exam_questions (
-              id, exam_id, position, prompt, type, bank_question_id, points,
-              answer_key, requires_manual_grading
+              id, exam_id, position, prompt, type, points, answer_key,
+              requires_manual_grading, school_id
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           `, [
             examQuestionId, examId, index + 1, question.prompt,
-            question.type, question.id, question.points, question.answer_key,
-            ["essay", "short_answer"].includes(question.type),
+            question.type, question.points, question.answerKey,
+            ["essay", "short_answer", "matching"].includes(question.type),
+            profile.schoolId,
           ]);
-          const { rows: options } = await client.query(`
-            SELECT position, label, content, is_correct
-            FROM question_bank_options WHERE question_id = $1 ORDER BY position
-          `, [question.id]);
-          for (const option of options) {
+          for (const [optionIndex, option] of question.options.entries()) {
             await client.query(`
               INSERT INTO exam_options (id, question_id, position, label, content, is_correct)
               VALUES ($1, $2, $3, $4, $5, $6)
-            `, [randomUUID(), examQuestionId, option.position, option.label, option.content, option.is_correct]);
+            `, [
+              randomUUID(), examQuestionId, optionIndex + 1, option.label,
+              option.content, option.isCorrect,
+            ]);
           }
         }
         for (const classId of classIds) {

@@ -17,6 +17,24 @@ import { seedDatabase } from "./seed.js";
 
 const origin = "http://localhost:5173";
 
+function multipleChoiceQuestion(prompt, { points = 1, correct = "A" } = {}) {
+  return {
+    type: "multiple_choice",
+    prompt,
+    answerKey: "",
+    points,
+    options: ["A", "B", "C", "D", "E"].map((label) => ({
+      label,
+      content: `Pilihan ${label}`,
+      isCorrect: label === correct,
+    })),
+  };
+}
+
+function essayQuestion(prompt, answerKey, points = 1) {
+  return { type: "essay", prompt, answerKey, points, options: [] };
+}
+
 async function startServer(t) {
   const { baseUrl } = await startServerWithApp(t);
   return baseUrl;
@@ -501,6 +519,16 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     "teacher_classes", "exam_activity_events", "admin_password_reset_logs",
   ]]);
   assert.equal(schemaRows.length, 15);
+  const removedQuestionRelations = await app.locals.database.query(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = ANY($1::text[])
+  `, [[
+    "question_bank", "question_bank_options", "questions", "question_options",
+    "question_banks", "exam_packages", "exam_package_questions", "exam_participants",
+  ]]);
+  assert.deepEqual(removedQuestionRelations.rows, []);
   const originHeaders = { origin };
   const anonymousAccess = await fetch(`${baseUrl}/api/teacher/dashboard`, { headers: originHeaders });
   assert.equal(anonymousAccess.status, 401);
@@ -524,6 +552,10 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     "UPDATE teachers SET user_id = $1 WHERE id = 'teacher-emma-murniati'",
     [teacher.id],
   );
+  const removedBankEndpoint = await fetch(`${baseUrl}/api/teacher/questions`, {
+    headers: { cookie: teacherCookie, ...originHeaders },
+  });
+  assert.equal(removedBankEndpoint.status, 404);
   const adminRegistration = await postJson(`${baseUrl}/api/auth/register`, {
     fullName: "Admin Sekolah",
     email: "admin@example.test",
@@ -581,7 +613,6 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const dashboard = await dashboardResponse.json();
   assert.equal(dashboard.teacher.fullName, "Emma Murniati, S.Pd.");
   assert.equal(dashboard.stats.totalClasses, 2);
-  assert.equal(dashboard.stats.totalQuestions, 6);
   assert.deepEqual(dashboard.recentExams, []);
 
   const profileBefore = await fetch(`${baseUrl}/api/teacher/profile`, {
@@ -612,73 +643,6 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     }, { cookie: adminCookie, ...originHeaders });
     assert.equal(addPhysicsSubject.status, 201);
   }
-  const createdQuestionResponse = await postJson(`${baseUrl}/api/teacher/questions`, {
-    academicYear: "2026/2027",
-    subject: "Fisika",
-    gradeLevel: "XI",
-    chapter: "Elektrolisis",
-    difficulty: "sulit",
-    type: "multiple_choice_complex",
-    prompt: "Pilih semua pernyataan yang benar tentang reaksi pada katode.",
-    answerKey: "",
-    points: 7,
-    explanation: "Pada katode berlangsung reaksi reduksi.",
-    options: [
-      { label: "A", content: "Terjadi reaksi reduksi.", isCorrect: true },
-      { label: "B", content: "Elektron diterima oleh spesies kimia.", isCorrect: true },
-      { label: "C", content: "Terjadi reaksi oksidasi.", isCorrect: false },
-    ],
-  }, { cookie: teacherCookie, ...originHeaders });
-  assert.equal(createdQuestionResponse.status, 201);
-  const { question: createdQuestion } = await createdQuestionResponse.json();
-  assert.equal(createdQuestion.type, "multiple_choice_complex");
-  assert.equal(createdQuestion.subject, "Fisika");
-  assert.equal(createdQuestion.points, 7);
-
-  const updatedQuestionResponse = await fetch(
-    `${baseUrl}/api/teacher/questions/${createdQuestion.id}`,
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json", cookie: teacherCookie, ...originHeaders },
-      body: JSON.stringify({ ...createdQuestion, chapter: "Elektrolisis Bab XI" }),
-    },
-  );
-  assert.equal(updatedQuestionResponse.status, 200);
-  assert.equal((await updatedQuestionResponse.json()).question.chapter, "Elektrolisis Bab XI");
-
-  const importResponse = await postJson(`${baseUrl}/api/teacher/questions/import`, {
-    questions: [{
-      academicYear: "2026/2027",
-      gradeLevel: "XI",
-      chapter: "Bilangan Kuantum",
-      difficulty: "sedang",
-      type: "multiple_choice",
-      prompt: "Bilangan kuantum utama untuk elektron pada kulit keempat adalah ...",
-      answerKey: "",
-      options: ["A", "B", "C", "D", "E"].map((label) => ({
-        label,
-        content: `Opsi ${label}`,
-        isCorrect: label === "B",
-      })),
-    }],
-  }, { cookie: teacherCookie, ...originHeaders });
-  assert.equal(importResponse.status, 201);
-  const imported = await importResponse.json();
-  assert.equal(imported.questions.length, 1);
-  assert.equal(imported.questions[0].options.find((option) => option.isCorrect).label, "B");
-
-  const filteredQuestions = await fetch(
-    `${baseUrl}/api/teacher/questions?chapter=${encodeURIComponent("Sel Volta")}`,
-    { headers: { cookie: teacherCookie, ...originHeaders } },
-  );
-  assert.equal((await filteredQuestions.json()).questions.length, 2);
-  const paginatedQuestions = await fetch(
-    `${baseUrl}/api/teacher/questions?page=2&pageSize=2`,
-    { headers: { cookie: teacherCookie, ...originHeaders } },
-  );
-  const paginated = await paginatedQuestions.json();
-  assert.equal(paginated.pagination.page, 2);
-  assert.equal(paginated.questions.length, 2);
 
   const classesResponse = await fetch(`${baseUrl}/api/teacher/classes`, {
     headers: { cookie: teacherCookie, ...originHeaders },
@@ -716,7 +680,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     durationMinutes: 45,
     mcQuestionCount: 1,
     essayQuestionCount: 0,
-    questionIds: ["question-kimia-redoks-001"],
+    questions: [multipleChoiceQuestion("Pertanyaan mata pelajaran khusus.")],
     classIds: [targetClass.id],
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(unregisteredSubjectExam.status, 400);
@@ -729,7 +693,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     durationMinutes: 45,
     mcQuestionCount: 1,
     essayQuestionCount: 0,
-    questionIds: ["question-kimia-redoks-001"],
+    questions: [multipleChoiceQuestion("Pertanyaan kelas yang tidak ditugaskan.")],
     classIds: [unassignedClass.id],
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(unassignedClassExam.status, 400);
@@ -749,7 +713,10 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     essayQuestionCount: 1,
     randomizeQuestions: true,
     randomizeOptions: true,
-    questionIds: ["question-kimia-redoks-001", "question-kimia-essay-001"],
+    questions: [
+      multipleChoiceQuestion("Apa yang terjadi pada elektron saat oksidasi?"),
+      essayQuestion("Jelaskan perbedaan oksidasi dan reduksi.", "Oksidasi melepas elektron; reduksi menerima elektron."),
+    ],
     classIds: [targetClass.id],
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(examResponse.status, 201);
@@ -759,6 +726,11 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(exam.status, "draft");
   assert.equal(exam.examType, "SAS");
   assert.equal(exam.autoGrade, true);
+  assert.deepEqual(exam.questions.map((question) => question.prompt), [
+    "Apa yang terjadi pada elektron saat oksidasi?",
+    "Jelaskan perbedaan oksidasi dan reduksi.",
+  ]);
+  assert.equal(exam.questions[0].options.length, 5);
 
   const publishResponse = await postJson(
     `${baseUrl}/api/teacher/exams/${exam.id}/publish`,
@@ -884,7 +856,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     durationMinutes: 45,
     mcQuestionCount: 1,
     essayQuestionCount: 0,
-    questionIds: [createdQuestion.id],
+    questions: [multipleChoiceQuestion("Apa peran elektrolisis?", { points: 7 })],
     classIds: [secondTargetClass.id],
     visibility: "public",
     showScore: false,
@@ -1014,19 +986,6 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     },
   );
   assert.equal(crossTenantAssignment.status, 400);
-  const deleteQuestionResponse = await fetch(
-    `${baseUrl}/api/teacher/questions/${createdQuestion.id}`,
-    { method: "DELETE", headers: { cookie: teacherCookie, ...originHeaders } },
-  );
-  assert.equal(deleteQuestionResponse.status, 200);
-  const deletedBankQuestion = await database.query(`
-    SELECT
-      (SELECT COUNT(*) FROM question_bank WHERE id = $1) AS questions,
-      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $1) AS options,
-      (SELECT COUNT(*) FROM exam_questions
-        WHERE exam_id = $2 AND prompt = $3 AND bank_question_id IS NULL) AS exam_copies
-  `, [createdQuestion.id, secondExam.id, createdQuestion.prompt]);
-  assert.deepEqual(Object.values(deletedBankQuestion.rows[0]).map(Number), [0, 0, 1]);
 
   const studentExamsResponse = await fetch(`${baseUrl}/api/student/exams`, {
     headers: { cookie: studentCookie, ...originHeaders },
@@ -1192,7 +1151,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     kkm: 75,
     mcQuestionCount: 1,
     essayQuestionCount: 0,
-    questionIds: ["question-kimia-redoks-001"],
+    questions: [multipleChoiceQuestion("Apa tanda terjadinya reduksi?")],
     classIds: [targetClass.id],
     randomizeQuestions: false,
   }, { cookie: teacherCookie, ...originHeaders });
@@ -1454,35 +1413,15 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   `, [student.id]);
   assert.deepEqual(Object.values(deletedStudentData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0]);
 
-  const { rows: [physicsSubject] } = await database.query(`
-    SELECT id FROM subjects
-    WHERE school_id = $1 AND name = 'Fisika'
-  `, [registrationOptions.school.id]);
-  const examBankQuestionId = "teacher-delete-exam-bank-question";
-  await database.query(`
-    INSERT INTO question_bank (
-      id, teacher_id, school_id, subject_id, academic_year, subject, grade_level,
-      chapter, difficulty, type, prompt
-    ) VALUES (
-      $1, 'teacher-emma-murniati', $2, $3, '2026/2027', 'Fisika', 'XI',
-      'Elektrolisis', 'sedang', 'multiple_choice', 'Sumber soal ujian yang dihapus?'
-    )
-  `, [examBankQuestionId, registrationOptions.school.id, physicsSubject.id]);
-  await database.query(`
-    INSERT INTO question_bank_options (
-      id, question_id, position, label, content, is_correct
-    ) VALUES ('teacher-delete-exam-bank-option', $1, 1, 'A', 'Pilihan sumber', TRUE)
-  `, [examBankQuestionId]);
   await database.query(`
     INSERT INTO exam_questions (
-      id, exam_id, position, prompt, type, bank_question_id, points,
-      answer_key, school_id
+      id, exam_id, position, prompt, type, points, answer_key, school_id
     ) VALUES
       ('teacher-delete-second-exam-question', $1, 2, 'Sumber soal ujian yang dihapus?',
-        'multiple_choice', $3, 1, 'A', $2),
-      ('teacher-delete-retained-exam-question', $4, 3, 'Salinan di ujian lain tetap ada',
-        'multiple_choice', $3, 1, 'A', $2)
-  `, [secondExam.id, registrationOptions.school.id, examBankQuestionId, exam.id]);
+        'multiple_choice', 1, 'A', $2),
+      ('teacher-delete-retained-exam-question', $3, 3, 'Salinan di ujian lain tetap ada',
+        'multiple_choice', 1, 'A', $2)
+  `, [secondExam.id, registrationOptions.school.id, exam.id]);
   await database.query(`
     INSERT INTO exam_options (id, question_id, position, label, content, is_correct)
     VALUES
@@ -1494,15 +1433,13 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     { method: "DELETE", headers: { cookie: teacherCookie, ...originHeaders } },
   );
   assert.equal(deleteTeacherExamResponse.status, 200);
-  const deletedExamBankData = await database.query(`
+  const deletedExamQuestions = await database.query(`
     SELECT
-      (SELECT COUNT(*) FROM question_bank WHERE id = $1) AS bank_questions,
-      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $1) AS bank_options,
-      (SELECT COUNT(*) FROM exam_questions WHERE exam_id = $2) AS deleted_exam_questions,
+      (SELECT COUNT(*) FROM exam_questions WHERE exam_id = $1) AS deleted_exam_questions,
       (SELECT COUNT(*) FROM exam_questions
-        WHERE id = 'teacher-delete-retained-exam-question' AND bank_question_id IS NULL) AS retained_exam_copy
-  `, [examBankQuestionId, secondExam.id]);
-  assert.deepEqual(Object.values(deletedExamBankData.rows[0]).map(Number), [0, 0, 0, 1]);
+        WHERE id = 'teacher-delete-retained-exam-question') AS retained_exam_question
+  `, [secondExam.id]);
+  assert.deepEqual(Object.values(deletedExamQuestions.rows[0]).map(Number), [0, 1]);
 
   const deleteExamResponse = await fetch(`${baseUrl}/api/teacher/exams/${exam.id}`, {
     method: "DELETE",
@@ -1524,12 +1461,6 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     WHERE id = 'teacher-emma-murniati'
   `, [adminSubject.id]);
   await database.query(`
-    UPDATE questions SET subject_id = $1 WHERE school_id = $2
-  `, [adminSubject.id, registrationOptions.school.id]);
-  await database.query(`
-    UPDATE question_bank SET subject_id = $1 WHERE school_id = $2
-  `, [adminSubject.id, registrationOptions.school.id]);
-  await database.query(`
     UPDATE exams SET subject_id = $1 WHERE id = ANY($2::text[])
   `, [adminSubject.id, [exam.id, remedialExam.id]]);
   const subjectDelete = await fetch(`${baseUrl}/api/admin/subjects/${adminSubject.id}`, {
@@ -1540,14 +1471,12 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const deletedSubjectData = await database.query(`
     SELECT
       (SELECT COUNT(*) FROM subjects WHERE id = $1) AS subjects,
-      (SELECT COUNT(*) FROM questions WHERE subject_id = $1) AS questions,
-      (SELECT COUNT(*) FROM question_bank WHERE subject_id = $1) AS bank_questions,
       (SELECT COUNT(*) FROM exams WHERE id = ANY($2::text[])) AS exams,
       (SELECT COUNT(*) FROM exam_attempts WHERE exam_id = ANY($2::text[])) AS attempts,
       (SELECT COUNT(*) FROM exam_results WHERE exam_id = ANY($2::text[])) AS results,
       (SELECT COUNT(*) FROM remedial_requests WHERE exam_id = ANY($2::text[])) AS remedials
   `, [adminSubject.id, [exam.id, remedialExam.id]]);
-  assert.deepEqual(Object.values(deletedSubjectData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(Object.values(deletedSubjectData.rows[0]).map(Number), [0, 0, 0, 0, 0]);
   const retainedTeacher = await database.query(
     "SELECT subject_id, subject FROM teachers WHERE id = 'teacher-emma-murniati'",
   );
@@ -1572,24 +1501,18 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
       mc_question_count, essay_question_count
     ) VALUES ($1, $2, $3, '2026/2027', 'Ganjil', 'XI', 1, 0)
   `, [teacherExamId, createdTeacher.teacherId, registrationOptions.school.id]);
-  const teacherQuestionId = "admin-delete-teacher-question";
   await database.query(`
-    INSERT INTO question_bank (
-      id, teacher_id, school_id, subject_id, academic_year, subject, grade_level,
-      chapter, difficulty, type, prompt
+    INSERT INTO exam_questions (
+      id, exam_id, position, prompt, type, points, answer_key, school_id
     ) VALUES (
-      $1, $2, $3, $4, '2026/2027', 'Matematika', 'XI',
-      'Aljabar', 'sedang', 'multiple_choice', 'Soal guru yang akan dihapus?'
+      'admin-delete-teacher-exam-question', $1, 1, 'Soal guru yang akan dihapus?',
+      'multiple_choice', 1, 'A', $2
     )
-  `, [
-    teacherQuestionId, createdTeacher.teacherId, registrationOptions.school.id,
-    createdTeacherSubject.subject_id,
-  ]);
+  `, [teacherExamId, registrationOptions.school.id]);
   await database.query(`
-    INSERT INTO question_bank_options (
-      id, question_id, position, label, content, is_correct
-    ) VALUES ('admin-delete-teacher-option', $1, 1, 'A', 'Pilihan', TRUE)
-  `, [teacherQuestionId]);
+    INSERT INTO exam_options (id, question_id, position, label, content, is_correct)
+    VALUES ('admin-delete-teacher-exam-option', 'admin-delete-teacher-exam-question', 1, 'A', 'Pilihan', TRUE)
+  `);
   const deleteTeacherResponse = await fetch(
     `${baseUrl}/api/admin/users/${createdTeacher.id}`,
     { method: "DELETE", headers: { cookie: adminCookie, ...originHeaders } },
@@ -1601,14 +1524,13 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
       (SELECT COUNT(*) FROM teachers WHERE id = $2) AS teachers,
       (SELECT COUNT(*) FROM exams WHERE id = $3) AS exams,
       (SELECT COUNT(*) FROM teacher_exam_settings WHERE exam_id = $3) AS settings,
-      (SELECT COUNT(*) FROM question_bank WHERE id = $4) AS bank_questions,
-      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $4) AS options,
+      (SELECT COUNT(*) FROM exam_questions WHERE exam_id = $3) AS exam_questions,
       (SELECT COUNT(*) FROM admin_password_reset_logs WHERE target_user_id = $1) AS reset_logs,
       (SELECT COUNT(*) FROM sessions WHERE user_id = $1) AS sessions
   `, [
-    createdTeacher.id, createdTeacher.teacherId, teacherExamId, teacherQuestionId,
+    createdTeacher.id, createdTeacher.teacherId, teacherExamId,
   ]);
-  assert.deepEqual(Object.values(deletedTeacherData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(Object.values(deletedTeacherData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0]);
 
   const deleteClassResponse = await fetch(
     `${baseUrl}/api/admin/classes/${targetClass.id}`,
