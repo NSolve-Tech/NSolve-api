@@ -540,6 +540,11 @@ export function createAdminModel(database) {
       GROUP BY c.id
       ORDER BY
         CASE c.grade_level WHEN 'X' THEN 1 WHEN 'XI' THEN 2 WHEN 'XII' THEN 3 ELSE 4 END,
+        CASE
+          WHEN c.name ~ ' [0-9]+$'
+          THEN CAST(substring(c.name from '[0-9]+$') AS INTEGER)
+          ELSE 999
+        END,
         c.name
     `, [schoolId]);
     return rows;
@@ -653,7 +658,11 @@ export function createAdminModel(database) {
         SELECT
           'class-' || md5(s.id) || '-' || lower(levels.grade_level) || '-' || class_numbers.number,
           s.id,
-          levels.grade_level || ' ' || class_numbers.number,
+          CASE
+            WHEN s.name = 'SMAN 2 Kota Lubuk Linggau' AND levels.grade_level = 'XI'
+            THEN 'XI F ' || class_numbers.number
+            ELSE levels.grade_level || ' ' || class_numbers.number
+          END,
           levels.grade_level,
           ''
         FROM schools s

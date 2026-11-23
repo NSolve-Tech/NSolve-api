@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import { ApiError } from "./services.js";
 
 const scryptAsync = promisify(scrypt);
+const xiFSchoolId = "school-sman2-lubuk-linggau";
+const xiFSchoolName = "SMAN 2 Kota Lubuk Linggau";
 
 function getSchoolId(user) {
   if (typeof user.schoolId !== "string" || !user.schoolId) {
@@ -332,11 +334,15 @@ export function createAdminService(model) {
           input.name.trim().length > 30 || !["X", "XI", "XII"].includes(input.gradeLevel)) {
         throw new ApiError(400, "Nama kelas dan jenjang tidak valid.");
       }
-      const match = input.name.trim().match(/^(X|XI|XII) ([0-9]{1,2})$/);
+      const match = input.name.trim().match(/^(X|XI F|XI|XII) ([0-9]{1,2})$/);
       const max = input.gradeLevel === "X" ? 12 : 11;
-      if (!match || match[1] !== input.gradeLevel ||
+      const expectedLevel = input.gradeLevel === "XI" &&
+        (user.schoolId === xiFSchoolId || user.schoolName === xiFSchoolName)
+        ? "XI F"
+        : input.gradeLevel;
+      if (!match || match[1] !== expectedLevel ||
           Number(match[2]) < 1 || Number(match[2]) > max) {
-        throw new ApiError(400, "Format kelas harus X 1–12, XI 1–11, atau XII 1–11.");
+        throw new ApiError(400, "Format kelas tidak sesuai dengan jenjang sekolah.");
       }
       try {
         return { class: await model.saveClass(

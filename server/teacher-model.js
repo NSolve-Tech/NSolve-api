@@ -140,7 +140,14 @@ export function createTeacherModel(database) {
       FROM teacher_classes tc
       JOIN classes c ON c.id = tc.class_id AND c.school_id = tc.school_id
       WHERE tc.teacher_id = $1 AND tc.school_id = $2
-      ORDER BY c.name
+      ORDER BY
+        CASE c.grade_level WHEN 'X' THEN 1 WHEN 'XI' THEN 2 WHEN 'XII' THEN 3 ELSE 4 END,
+        CASE
+          WHEN c.name ~ ' [0-9]+$'
+          THEN CAST(substring(c.name from '[0-9]+$') AS INTEGER)
+          ELSE 999
+        END,
+        c.name
     `, [profile.id, profile.schoolId]);
     return rows;
   }

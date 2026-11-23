@@ -23,6 +23,7 @@ const migrations = [
   { version: 15, path: "migrations/015_standard_classes_for_all_schools.sql" },
   { version: 16, path: "migrations/016_exam_score_visibility.sql" },
   { version: 17, path: "migrations/017_exam_exit_activity.sql" },
+  { version: 18, path: "migrations/018_sman2_xi_class_names.sql" },
 ];
 
 export const latestSchemaVersion = migrations.at(-1).version;

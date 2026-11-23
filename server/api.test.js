@@ -80,6 +80,18 @@ test("HTTP API requires class registration and keeps exam data empty without pub
     headers: { origin },
   });
   const options = await optionsResponse.json();
+  assert.deepEqual(
+    options.classes.filter((item) => item.gradeLevel === "XI").map((item) => item.name),
+    Array.from({ length: 11 }, (_, index) => `XI F ${index + 1}`),
+  );
+  assert.deepEqual(
+    options.classes.filter((item) => item.gradeLevel === "X").map((item) => item.name),
+    Array.from({ length: 12 }, (_, index) => `X ${index + 1}`),
+  );
+  assert.deepEqual(
+    options.classes.filter((item) => item.gradeLevel === "XII").map((item) => item.name),
+    Array.from({ length: 11 }, (_, index) => `XII ${index + 1}`),
+  );
   const missingClass = await postJson(`${baseUrl}/api/auth/register`, {
     fullName: "Siswa Tanpa Kelas",
     email: "no-class@example.test",
@@ -180,6 +192,82 @@ test("HTTP API rejects unauthorized origins and unauthenticated exam access", as
   assert.equal(forbiddenOrigin.status, 403);
   const health = await fetch(`${baseUrl}/health`);
   assert.deepEqual(await health.json(), { status: "ok", database: "postgres" });
+});
+
+test("class migration renames only SMAN 2 XI classes and preserves class IDs", async (t) => {
+  const pglite = await PGlite.create();
+  const postgresServer = new PGLiteSocketServer({
+    db: pglite,
+    host: "127.0.0.1",
+    port: 0,
+    maxConnections: 1,
+  });
+  await postgresServer.start();
+  const [host, port] = postgresServer.getServerConn().split(":");
+  const database = new pg.Pool({
+    host,
+    port: Number(port),
+    database: "postgres",
+    user: "postgres",
+    password: "postgres",
+    max: 1,
+  });
+  t.after(async () => {
+    await database.end();
+    await postgresServer.stop();
+    await pglite.close();
+  });
+
+  await migrateDatabase(database);
+  await database.query("DELETE FROM schema_migrations WHERE version = 18");
+  await database.query(`
+    UPDATE classes
+    SET name = 'XI ' || substring(name FROM '[0-9]+$')
+    WHERE school_id = 'school-sman2-lubuk-linggau'
+      AND grade_level = 'XI'
+  `);
+  await database.query(`
+    INSERT INTO schools (id, name)
+    VALUES ('school-other-migration-test', 'Sekolah Lain')
+  `);
+  await database.query(`
+    INSERT INTO classes (id, school_id, name, grade_level, program) VALUES
+      ('other-xi-1', 'school-other-migration-test', 'XI 1', 'XI', '')
+  `);
+  await database.query(`
+    INSERT INTO users (id, full_name, email, password_salt, password_hash, school_id)
+    VALUES ('migration-student', 'Siswa Uji', 'migration-student@example.test', 'salt', 'hash',
+      'school-sman2-lubuk-linggau')
+  `);
+  await database.query(`
+    INSERT INTO students (user_id, school_id)
+    VALUES ('migration-student', 'school-sman2-lubuk-linggau')
+  `);
+  await database.query(`
+    INSERT INTO class_members (class_id, student_user_id, school_id)
+    VALUES ('class-xi-1', 'migration-student', 'school-sman2-lubuk-linggau')
+  `);
+
+  await migrateDatabase(database);
+  const { rows } = await database.query(`
+    SELECT id, name FROM classes
+    WHERE id IN ('class-xi-1', 'class-xi-11', 'class-x-1', 'class-xii-1', 'other-xi-1')
+    ORDER BY id
+  `);
+  assert.deepEqual(rows, [
+    { id: "class-x-1", name: "X 1" },
+    { id: "class-xi-1", name: "XI F 1" },
+    { id: "class-xi-11", name: "XI F 11" },
+    { id: "class-xii-1", name: "XII 1" },
+    { id: "other-xi-1", name: "XI 1" },
+  ]);
+  const { rows: [studentClass] } = await database.query(`
+    SELECT cm.class_id AS "classId", c.name
+    FROM class_members cm
+    JOIN classes c ON c.id = cm.class_id
+    WHERE cm.student_user_id = 'migration-student'
+  `);
+  assert.deepEqual(studentClass, { classId: "class-xi-1", name: "XI F 1" });
 });
 
 test("platform admins can switch schools while school admins stay scoped", async (t) => {
@@ -460,7 +548,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const assignmentsBefore = await adminAssignmentsBefore.json();
   assert.deepEqual(assignmentsBefore.teachers[0].classes, []);
   const classIds = registrationOptions.classes
-    .filter((item) => ["XI 9", "XI 11"].includes(item.name))
+    .filter((item) => ["XI F 9", "XI F 11"].includes(item.name))
     .map((item) => item.id);
   const assignmentResponse = await fetch(
     `${baseUrl}/api/admin/teachers/teacher-emma-murniati/classes`,
@@ -473,8 +561,18 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(assignmentResponse.status, 200);
   assert.deepEqual(
     (await assignmentResponse.json()).teachers[0].classes.map((item) => item.name),
-    ["XI 11", "XI 9"],
+    ["XI F 11", "XI F 9"],
   );
+  const legacyAdminClassFormat = await postJson(`${baseUrl}/api/admin/classes`, {
+    name: "XI 1",
+    gradeLevel: "XI",
+  }, { cookie: adminCookie, ...originHeaders });
+  assert.equal(legacyAdminClassFormat.status, 400);
+  const xiFAdminClassFormat = await postJson(`${baseUrl}/api/admin/classes`, {
+    name: "XI F 1",
+    gradeLevel: "XI",
+  }, { cookie: adminCookie, ...originHeaders });
+  assert.equal(xiFAdminClassFormat.status, 409);
 
   const dashboardResponse = await fetch(`${baseUrl}/api/teacher/dashboard`, {
     headers: { cookie: teacherCookie, ...originHeaders },
@@ -586,8 +684,8 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     headers: { cookie: teacherCookie, ...originHeaders },
   });
   const classes = (await classesResponse.json()).classes;
-  const targetClass = classes.find((item) => item.name === "XI 9");
-  const secondTargetClass = classes.find((item) => item.name === "XI 11");
+  const targetClass = classes.find((item) => item.name === "XI F 9");
+  const secondTargetClass = classes.find((item) => item.name === "XI F 11");
   const unrelatedClass = classes.find((item) => item.name === "X 1");
   assert.ok(targetClass);
   assert.ok(secondTargetClass);
@@ -605,7 +703,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const availableClasses = (await availableClassesResponse.json()).classes;
   assert.deepEqual(
     availableClasses.map((item) => item.name).sort(),
-    ["XI 11", "XI 9"],
+    ["XI F 11", "XI F 9"],
   );
   const unassignedClass = registrationOptions.classes.find((item) => item.name === "X 1");
   assert.ok(unassignedClass);
@@ -636,7 +734,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(unassignedClassExam.status, 400);
   const duplicateClassResponse = await postJson(`${baseUrl}/api/teacher/classes`, {
-    name: "XI 9",
+    name: "XI F 9",
     gradeLevel: "XI",
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(duplicateClassResponse.status, 404);
@@ -719,7 +817,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(adminTokenUpdate.status, 200);
   assert.equal((await adminTokenUpdate.json()).exam.code, "KIM24@");
   const examEditData = {
-    title: "Ulangan Harian Kimia XI 9 dan XI 11",
+    title: "Ulangan Harian Kimia XI F 9 dan XI F 11",
     subject: "Kimia",
     description: "Materi reaksi redoks",
     academicYear: "2026/2027",
@@ -773,7 +871,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(updatedExam.kkm, 80);
   assert.equal(updatedExam.code, "KIM23#");
   assert.equal(updatedExam.status, "active");
-  assert.deepEqual(updatedExam.classes.map((item) => item.name), ["XI 11", "XI 9"]);
+  assert.deepEqual(updatedExam.classes.map((item) => item.name), ["XI F 11", "XI F 9"]);
   assert.equal(updatedExam.questions[0].prompt, examEditData.questions[0].prompt);
   assert.equal(updatedExam.questions[1].answerKey, examEditData.questions[1].answerKey);
 
@@ -836,7 +934,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(analytics.questions.length, 2);
 
   const studentRegistration = await postJson(`${baseUrl}/api/auth/register`, {
-    fullName: "Siswa XI 9",
+    fullName: "Siswa XI F 9",
     email: "siswa-xi9@example.test",
     password: "student-password-123",
     schoolId: registrationOptions.school.id,
@@ -860,7 +958,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(teacherResults.summary.submissions, 0);
 
   const secondStudentRegistration = await postJson(`${baseUrl}/api/auth/register`, {
-    fullName: "Siswa XI 11",
+    fullName: "Siswa XI F 11",
     email: "siswa-xi11@example.test",
     password: "student-password-123",
     schoolId: registrationOptions.school.id,
@@ -989,7 +1087,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(activityLogResponse.status, 200);
   const activityLog = await activityLogResponse.json();
   assert.equal(activityLog.events[0].eventType, "tab_hidden");
-  assert.equal(activityLog.events[0].studentName, "Siswa XI 9");
+  assert.equal(activityLog.events[0].studentName, "Siswa XI F 9");
   assert.equal(activityLog.sessions[0].attemptId, attempt.id);
   assert.equal(activityLog.sessions[0].violationCount, 1);
   const secondActivity = await postJson(
@@ -1070,8 +1168,8 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     { headers: { cookie: teacherCookie, ...originHeaders } },
   );
   const { requests: teacherRemedials } = await teacherRemedialRequests.json();
-  assert.equal(teacherRemedials[0].studentName, "Siswa XI 9");
-  assert.equal(teacherRemedials[0].className, "XI 9");
+  assert.equal(teacherRemedials[0].studentName, "Siswa XI F 9");
+  assert.equal(teacherRemedials[0].className, "XI F 9");
   assert.equal(teacherRemedials[0].kkm, 80);
   assert.equal(teacherRemedials[0].examId, exam.id);
 
@@ -1085,7 +1183,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   assert.equal(approveRemedial.status, 200);
   const remedialExamResponse = await postJson(`${baseUrl}/api/teacher/exams`, {
-    title: "Remedial Kimia XI 9",
+    title: "Remedial Kimia XI F 9",
     subject: "Kimia",
     academicYear: "2026/2027",
     semester: "Genap",
@@ -1158,11 +1256,11 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     body: JSON.stringify({ classId: secondTargetClass.id }),
   });
   assert.equal(moveStudent.status, 200);
-  assert.equal((await moveStudent.json()).user.className, "XI 11");
+  assert.equal((await moveStudent.json()).user.className, "XI F 11");
   const movedStudentProfile = await fetch(`${baseUrl}/api/student/profile`, {
     headers: { cookie: studentCookie, ...originHeaders },
   });
-  assert.equal((await movedStudentProfile.json()).profile.className, "XI 11");
+  assert.equal((await movedStudentProfile.json()).profile.className, "XI F 11");
   await fetch(`${baseUrl}/api/admin/users/${student.id}`, {
     method: "PUT",
     headers: { "content-type": "application/json", cookie: adminCookie, ...originHeaders },
@@ -1204,7 +1302,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const { user: createdTeacher, temporaryPassword: initialPassword } =
     await createTeacherAccount.json();
   assert.equal(createdTeacher.role, "teacher");
-  assert.deepEqual(createdTeacher.teacherClasses.map((item) => item.name).sort(), ["XI 11", "XI 9"]);
+  assert.deepEqual(createdTeacher.teacherClasses.map((item) => item.name).sort(), ["XI F 11", "XI F 9"]);
   const createdTeacherLogin = await postJson(`${baseUrl}/api/auth/login`, {
     email: createdTeacher.email,
     password: initialPassword,

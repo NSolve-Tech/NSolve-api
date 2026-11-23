@@ -29,6 +29,7 @@ async function seedTeacherWorkspace(database, now) {
     WHERE school_id = $1
       AND NOT (
         name ~ '^X [0-9]+$'
+        OR name ~ '^XI F [0-9]+$'
         OR name ~ '^XI [0-9]+$'
         OR name ~ '^XII [0-9]+$'
       )
@@ -36,12 +37,13 @@ async function seedTeacherWorkspace(database, now) {
   for (const [gradeLevel, count] of [["X", 12], ["XI", 11], ["XII", 11]]) {
     for (let number = 1; number <= count; number++) {
       const id = `class-${gradeLevel.toLowerCase()}-${number}`;
-      const name = `${gradeLevel} ${number}`;
+      const name = gradeLevel === "XI"
+        ? `XI F ${number}`
+        : `${gradeLevel} ${number}`;
       await database.query(`
         INSERT INTO classes (id, school_id, name, grade_level, program)
         VALUES ($1, $2, $3, $4, '')
-        ON CONFLICT (id) DO UPDATE SET
-          name = EXCLUDED.name,
+        ON CONFLICT (school_id, name) DO UPDATE SET
           grade_level = EXCLUDED.grade_level,
           program = ''
       `, [id, schoolId, name, gradeLevel]);
