@@ -333,17 +333,27 @@ test("platform admins can switch schools while school admins stay scoped", async
   assert.equal(schoolRegistrationOptions.classes.length, 34);
   assert.ok(schoolRegistrationOptions.classes.some((item) => item.name === "XI 9"));
 
-  const deactivateSchoolResponse = await fetch(
+  const deleteSchoolResponse = await fetch(
     `${baseUrl}/api/admin/schools/${createdSchool.id}`,
     { method: "DELETE", headers: { cookie: platformCookie, origin } },
   );
-  assert.equal(deactivateSchoolResponse.status, 200);
-  assert.equal((await deactivateSchoolResponse.json()).deactivated, true);
+  assert.equal(deleteSchoolResponse.status, 200);
+  assert.equal((await deleteSchoolResponse.json()).deleted, true);
+  const deletedSchoolData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM schools WHERE id = $1) AS schools,
+      (SELECT COUNT(*) FROM users WHERE school_id = $1) AS users,
+      (SELECT COUNT(*) FROM students WHERE school_id = $1) AS students,
+      (SELECT COUNT(*) FROM teachers WHERE school_id = $1) AS teachers,
+      (SELECT COUNT(*) FROM classes WHERE school_id = $1) AS classes,
+      (SELECT COUNT(*) FROM subjects WHERE school_id = $1) AS subjects
+  `, [createdSchool.id]);
+  assert.deepEqual(Object.values(deletedSchoolData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0]);
   const inactiveLogin = await postJson(`${baseUrl}/api/auth/login`, {
     email: "siswa@smanda.example.test",
     password: "student-password-123",
   }, { origin });
-  assert.equal(inactiveLogin.status, 403);
+  assert.equal(inactiveLogin.status, 401);
   const inactiveSession = await fetch(`${baseUrl}/api/auth/me`, {
     headers: { cookie: studentCookie, origin },
   });
@@ -363,8 +373,7 @@ test("platform admins can switch schools while school admins stay scoped", async
     headers: { cookie: platformCookie, origin },
   });
   const standardClassSchoolDelete = await deleteEmptySchool.json();
-  assert.equal(standardClassSchoolDelete.deleted, false);
-  assert.equal(standardClassSchoolDelete.deactivated, true);
+  assert.equal(standardClassSchoolDelete.deleted, true);
 
   const schoolCookie = await login("school-admin@example.test");
   const schoolList = await fetch(`${baseUrl}/api/admin/schools`, {
@@ -912,6 +921,14 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     { method: "DELETE", headers: { cookie: teacherCookie, ...originHeaders } },
   );
   assert.equal(deleteQuestionResponse.status, 200);
+  const deletedBankQuestion = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM question_bank WHERE id = $1) AS questions,
+      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $1) AS options,
+      (SELECT COUNT(*) FROM exam_questions
+        WHERE exam_id = $2 AND prompt = $3 AND bank_question_id IS NULL) AS exam_copies
+  `, [createdQuestion.id, secondExam.id, createdQuestion.prompt]);
+  assert.deepEqual(Object.values(deletedBankQuestion.rows[0]).map(Number), [0, 0, 1]);
 
   const studentExamsResponse = await fetch(`${baseUrl}/api/student/exams`, {
     headers: { cookie: studentCookie, ...originHeaders },
@@ -1174,11 +1191,6 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   });
   assert.ok((await refreshedTeacherSubjects.json()).subjects.some((item) =>
     item.id === adminSubject.id));
-  const subjectDelete = await fetch(`${baseUrl}/api/admin/subjects/${adminSubject.id}`, {
-    method: "DELETE",
-    headers: { cookie: adminCookie, ...originHeaders },
-  });
-  assert.equal(subjectDelete.status, 200);
 
   const createTeacherAccount = await postJson(`${baseUrl}/api/admin/users`, {
     fullName: "Guru Baru",
@@ -1326,6 +1338,193 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     { cookie: studentCookie, ...originHeaders },
   );
   assert.equal(hiddenRemedialRequest.status, 403);
+
+  const deleteStudentResponse = await fetch(`${baseUrl}/api/admin/users/${student.id}`, {
+    method: "DELETE",
+    headers: { cookie: adminCookie, ...originHeaders },
+  });
+  assert.equal(deleteStudentResponse.status, 200);
+  const deletedStudentData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM users WHERE id = $1) AS users,
+      (SELECT COUNT(*) FROM students WHERE user_id = $1) AS students,
+      (SELECT COUNT(*) FROM class_members WHERE student_user_id = $1) AS class_members,
+      (SELECT COUNT(*) FROM sessions WHERE user_id = $1) AS sessions,
+      (SELECT COUNT(*) FROM exam_attempts WHERE user_id = $1) AS attempts,
+      (SELECT COUNT(*) FROM exam_results WHERE user_id = $1) AS results,
+      (SELECT COUNT(*) FROM remedial_requests WHERE student_id = $1) AS remedials
+  `, [student.id]);
+  assert.deepEqual(Object.values(deletedStudentData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0]);
+
+  const { rows: [physicsSubject] } = await database.query(`
+    SELECT id FROM subjects
+    WHERE school_id = $1 AND name = 'Fisika'
+  `, [registrationOptions.school.id]);
+  const examBankQuestionId = "teacher-delete-exam-bank-question";
+  await database.query(`
+    INSERT INTO question_bank (
+      id, teacher_id, school_id, subject_id, academic_year, subject, grade_level,
+      chapter, difficulty, type, prompt
+    ) VALUES (
+      $1, 'teacher-emma-murniati', $2, $3, '2026/2027', 'Fisika', 'XI',
+      'Elektrolisis', 'sedang', 'multiple_choice', 'Sumber soal ujian yang dihapus?'
+    )
+  `, [examBankQuestionId, registrationOptions.school.id, physicsSubject.id]);
+  await database.query(`
+    INSERT INTO question_bank_options (
+      id, question_id, position, label, content, is_correct
+    ) VALUES ('teacher-delete-exam-bank-option', $1, 1, 'A', 'Pilihan sumber', TRUE)
+  `, [examBankQuestionId]);
+  await database.query(`
+    INSERT INTO exam_questions (
+      id, exam_id, position, prompt, type, bank_question_id, points,
+      answer_key, school_id
+    ) VALUES
+      ('teacher-delete-second-exam-question', $1, 2, 'Sumber soal ujian yang dihapus?',
+        'multiple_choice', $3, 1, 'A', $2),
+      ('teacher-delete-retained-exam-question', $4, 3, 'Salinan di ujian lain tetap ada',
+        'multiple_choice', $3, 1, 'A', $2)
+  `, [secondExam.id, registrationOptions.school.id, examBankQuestionId, exam.id]);
+  await database.query(`
+    INSERT INTO exam_options (id, question_id, position, label, content, is_correct)
+    VALUES
+      ('teacher-delete-second-exam-option', 'teacher-delete-second-exam-question', 1, 'A', 'Pilihan', TRUE),
+      ('teacher-delete-retained-exam-option', 'teacher-delete-retained-exam-question', 1, 'A', 'Pilihan', TRUE)
+  `);
+  const deleteTeacherExamResponse = await fetch(
+    `${baseUrl}/api/teacher/exams/${secondExam.id}`,
+    { method: "DELETE", headers: { cookie: teacherCookie, ...originHeaders } },
+  );
+  assert.equal(deleteTeacherExamResponse.status, 200);
+  const deletedExamBankData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM question_bank WHERE id = $1) AS bank_questions,
+      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $1) AS bank_options,
+      (SELECT COUNT(*) FROM exam_questions WHERE exam_id = $2) AS deleted_exam_questions,
+      (SELECT COUNT(*) FROM exam_questions
+        WHERE id = 'teacher-delete-retained-exam-question' AND bank_question_id IS NULL) AS retained_exam_copy
+  `, [examBankQuestionId, secondExam.id]);
+  assert.deepEqual(Object.values(deletedExamBankData.rows[0]).map(Number), [0, 0, 0, 1]);
+
+  const deleteExamResponse = await fetch(`${baseUrl}/api/teacher/exams/${exam.id}`, {
+    method: "DELETE",
+    headers: { cookie: teacherCookie, ...originHeaders },
+  });
+  assert.equal(deleteExamResponse.status, 200);
+  const deletedExamData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM exams WHERE id = $1) AS exams,
+      (SELECT COUNT(*) FROM exam_questions WHERE exam_id = $1) AS questions,
+      (SELECT COUNT(*) FROM exam_attempts WHERE exam_id = $1) AS attempts,
+      (SELECT COUNT(*) FROM exam_results WHERE exam_id = $1) AS results,
+      (SELECT COUNT(*) FROM remedial_requests WHERE exam_id = $1 OR scheduled_exam_id = $1) AS remedials
+  `, [exam.id]);
+  assert.deepEqual(Object.values(deletedExamData.rows[0]).map(Number), [0, 0, 0, 0, 0]);
+
+  await database.query(`
+    UPDATE teachers SET subject_id = $1, subject = 'Informatika'
+    WHERE id = 'teacher-emma-murniati'
+  `, [adminSubject.id]);
+  await database.query(`
+    UPDATE questions SET subject_id = $1 WHERE school_id = $2
+  `, [adminSubject.id, registrationOptions.school.id]);
+  await database.query(`
+    UPDATE question_bank SET subject_id = $1 WHERE school_id = $2
+  `, [adminSubject.id, registrationOptions.school.id]);
+  await database.query(`
+    UPDATE exams SET subject_id = $1 WHERE id = ANY($2::text[])
+  `, [adminSubject.id, [exam.id, remedialExam.id]]);
+  const subjectDelete = await fetch(`${baseUrl}/api/admin/subjects/${adminSubject.id}`, {
+    method: "DELETE",
+    headers: { cookie: adminCookie, ...originHeaders },
+  });
+  assert.equal(subjectDelete.status, 200);
+  const deletedSubjectData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM subjects WHERE id = $1) AS subjects,
+      (SELECT COUNT(*) FROM questions WHERE subject_id = $1) AS questions,
+      (SELECT COUNT(*) FROM question_bank WHERE subject_id = $1) AS bank_questions,
+      (SELECT COUNT(*) FROM exams WHERE id = ANY($2::text[])) AS exams,
+      (SELECT COUNT(*) FROM exam_attempts WHERE exam_id = ANY($2::text[])) AS attempts,
+      (SELECT COUNT(*) FROM exam_results WHERE exam_id = ANY($2::text[])) AS results,
+      (SELECT COUNT(*) FROM remedial_requests WHERE exam_id = ANY($2::text[])) AS remedials
+  `, [adminSubject.id, [exam.id, remedialExam.id]]);
+  assert.deepEqual(Object.values(deletedSubjectData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0]);
+  const retainedTeacher = await database.query(
+    "SELECT subject_id, subject FROM teachers WHERE id = 'teacher-emma-murniati'",
+  );
+  assert.deepEqual(retainedTeacher.rows[0], { subject_id: null, subject: "Umum" });
+
+  const { rows: [createdTeacherSubject] } = await database.query(`
+    SELECT subject_id FROM teachers WHERE id = $1
+  `, [createdTeacher.teacherId]);
+  const teacherExamId = "admin-delete-teacher-exam";
+  await database.query(`
+    INSERT INTO exams (
+      id, school_id, subject_id, title, subject, teacher_name, code, status,
+      duration_minutes, opens_at, closes_at
+    ) VALUES (
+      $1, $2, $3, 'Ujian Guru Hapus', 'Matematika', 'Guru Baru',
+      'DEL25!', 'scheduled', 30, NOW(), NOW() + INTERVAL '1 hour'
+    )
+  `, [teacherExamId, registrationOptions.school.id, createdTeacherSubject.subject_id]);
+  await database.query(`
+    INSERT INTO teacher_exam_settings (
+      exam_id, teacher_id, school_id, academic_year, semester, grade_level,
+      mc_question_count, essay_question_count
+    ) VALUES ($1, $2, $3, '2026/2027', 'Ganjil', 'XI', 1, 0)
+  `, [teacherExamId, createdTeacher.teacherId, registrationOptions.school.id]);
+  const teacherQuestionId = "admin-delete-teacher-question";
+  await database.query(`
+    INSERT INTO question_bank (
+      id, teacher_id, school_id, subject_id, academic_year, subject, grade_level,
+      chapter, difficulty, type, prompt
+    ) VALUES (
+      $1, $2, $3, $4, '2026/2027', 'Matematika', 'XI',
+      'Aljabar', 'sedang', 'multiple_choice', 'Soal guru yang akan dihapus?'
+    )
+  `, [
+    teacherQuestionId, createdTeacher.teacherId, registrationOptions.school.id,
+    createdTeacherSubject.subject_id,
+  ]);
+  await database.query(`
+    INSERT INTO question_bank_options (
+      id, question_id, position, label, content, is_correct
+    ) VALUES ('admin-delete-teacher-option', $1, 1, 'A', 'Pilihan', TRUE)
+  `, [teacherQuestionId]);
+  const deleteTeacherResponse = await fetch(
+    `${baseUrl}/api/admin/users/${createdTeacher.id}`,
+    { method: "DELETE", headers: { cookie: adminCookie, ...originHeaders } },
+  );
+  assert.equal(deleteTeacherResponse.status, 200);
+  const deletedTeacherData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM users WHERE id = $1) AS users,
+      (SELECT COUNT(*) FROM teachers WHERE id = $2) AS teachers,
+      (SELECT COUNT(*) FROM exams WHERE id = $3) AS exams,
+      (SELECT COUNT(*) FROM teacher_exam_settings WHERE exam_id = $3) AS settings,
+      (SELECT COUNT(*) FROM question_bank WHERE id = $4) AS bank_questions,
+      (SELECT COUNT(*) FROM question_bank_options WHERE question_id = $4) AS options,
+      (SELECT COUNT(*) FROM admin_password_reset_logs WHERE target_user_id = $1) AS reset_logs,
+      (SELECT COUNT(*) FROM sessions WHERE user_id = $1) AS sessions
+  `, [
+    createdTeacher.id, createdTeacher.teacherId, teacherExamId, teacherQuestionId,
+  ]);
+  assert.deepEqual(Object.values(deletedTeacherData.rows[0]).map(Number), [0, 0, 0, 0, 0, 0, 0, 0]);
+
+  const deleteClassResponse = await fetch(
+    `${baseUrl}/api/admin/classes/${targetClass.id}`,
+    { method: "DELETE", headers: { cookie: adminCookie, ...originHeaders } },
+  );
+  assert.equal(deleteClassResponse.status, 200);
+  const deletedClassData = await database.query(`
+    SELECT
+      (SELECT COUNT(*) FROM classes WHERE id = $1) AS classes,
+      (SELECT COUNT(*) FROM class_members WHERE class_id = $1) AS students,
+      (SELECT COUNT(*) FROM teacher_classes WHERE class_id = $1) AS teachers,
+      (SELECT COUNT(*) FROM exam_classes WHERE class_id = $1) AS exams
+  `, [targetClass.id]);
+  assert.deepEqual(Object.values(deletedClassData.rows[0]).map(Number), [0, 0, 0, 0]);
 });
 
 test("production configuration requires secure cookies and PostgreSQL", () => {

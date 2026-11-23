@@ -380,12 +380,98 @@ export function createAdminModel(database) {
     return rows;
   }
 
-  async function deleteUser(schoolId, userId) {
-    const { rows } = await database.query(
-      "DELETE FROM users WHERE id = $1 AND school_id = $2 RETURNING id",
-      [userId, schoolId],
+  async function deleteExams(client, schoolId, examIds) {
+    const ids = [...new Set(examIds)];
+    if (!ids.length) return;
+    await client.query(`
+      DELETE FROM remedial_requests
+      WHERE school_id = $1
+        AND (exam_id = ANY($2::text[]) OR scheduled_exam_id = ANY($2::text[]))
+    `, [schoolId, ids]);
+    await client.query(
+      "DELETE FROM exam_results WHERE school_id = $1 AND exam_id = ANY($2::text[])",
+      [schoolId, ids],
     );
-    return rows.length > 0;
+    await client.query(
+      "DELETE FROM exam_attempts WHERE school_id = $1 AND exam_id = ANY($2::text[])",
+      [schoolId, ids],
+    );
+    await client.query(
+      "DELETE FROM exams WHERE school_id = $1 AND id = ANY($2::text[])",
+      [schoolId, ids],
+    );
+  }
+
+  async function deleteTeacherData(client, schoolId, teacherIds) {
+    if (!teacherIds.length) return;
+    const { rows: exams } = await client.query(`
+      SELECT exam_id AS id FROM teacher_exam_settings
+      WHERE school_id = $1 AND teacher_id = ANY($2::text[])
+    `, [schoolId, teacherIds]);
+    await deleteExams(client, schoolId, exams.map((exam) => exam.id));
+    await client.query(
+      "DELETE FROM remedial_requests WHERE school_id = $1 AND teacher_id = ANY($2::text[])",
+      [schoolId, teacherIds],
+    );
+    const { rows: questions } = await client.query(`
+      SELECT id FROM questions
+      WHERE school_id = $1 AND teacher_id = ANY($2::text[])
+    `, [schoolId, teacherIds]);
+    const questionIds = questions.map((question) => question.id);
+    if (questionIds.length) {
+      await client.query(
+        "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
+        [questionIds],
+      );
+      await client.query(
+        "DELETE FROM questions WHERE school_id = $1 AND id = ANY($2::text[])",
+        [schoolId, questionIds],
+      );
+    }
+    await client.query(
+      "DELETE FROM question_bank WHERE school_id = $1 AND teacher_id = ANY($2::text[])",
+      [schoolId, teacherIds],
+    );
+    await client.query(
+      "DELETE FROM teachers WHERE school_id = $1 AND id = ANY($2::text[])",
+      [schoolId, teacherIds],
+    );
+  }
+
+  async function deleteUser(schoolId, userId) {
+    return withTransaction(database, async (client) => {
+      const { rows: [user] } = await client.query(`
+        SELECT id, role FROM users
+        WHERE id = $1 AND school_id = $2
+        FOR UPDATE
+      `, [userId, schoolId]);
+      if (!user) return false;
+      await client.query(
+        "DELETE FROM exam_results WHERE school_id = $1 AND user_id = $2",
+        [schoolId, userId],
+      );
+      await client.query(
+        "DELETE FROM exam_attempts WHERE school_id = $1 AND user_id = $2",
+        [schoolId, userId],
+      );
+      await client.query(
+        "DELETE FROM admin_password_reset_logs WHERE school_id = $1 AND target_user_id = $2",
+        [schoolId, userId],
+      );
+      const { rows: teachers } = await client.query(`
+        SELECT id FROM teachers
+        WHERE school_id = $1 AND user_id = $2
+        FOR UPDATE
+      `, [schoolId, userId]);
+      if (teachers.length) {
+        await deleteTeacherData(client, schoolId, teachers.map((teacher) => teacher.id));
+      }
+      const { rows } = await client.query(
+        "DELETE FROM users WHERE id = $1 AND school_id = $2 RETURNING id",
+        [userId, schoolId],
+      );
+      return rows.length > 0;
+    });
   }
 
   async function listExams(schoolId) {
@@ -471,11 +557,47 @@ export function createAdminModel(database) {
   }
 
   async function deleteSubject(schoolId, subjectId) {
-    const { rows } = await database.query(
-      "DELETE FROM subjects WHERE id = $1 AND school_id = $2 RETURNING id",
-      [subjectId, schoolId],
-    );
-    return rows.length > 0;
+    return withTransaction(database, async (client) => {
+      const { rows: [subject] } = await client.query(`
+        SELECT id FROM subjects
+        WHERE id = $1 AND school_id = $2
+        FOR UPDATE
+      `, [subjectId, schoolId]);
+      if (!subject) return false;
+      const { rows: exams } = await client.query(
+        "SELECT id FROM exams WHERE subject_id = $1 AND school_id = $2",
+        [subjectId, schoolId],
+      );
+      await deleteExams(client, schoolId, exams.map((exam) => exam.id));
+      const { rows: questions } = await client.query(
+        "SELECT id FROM questions WHERE subject_id = $1 AND school_id = $2",
+        [subjectId, schoolId],
+      );
+      const questionIds = questions.map((question) => question.id);
+      if (questionIds.length) {
+        await client.query(
+          "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
+          [questionIds],
+        );
+        await client.query(
+          "DELETE FROM questions WHERE subject_id = $1 AND school_id = $2",
+          [subjectId, schoolId],
+        );
+      }
+      await client.query(
+        "DELETE FROM question_bank WHERE subject_id = $1 AND school_id = $2",
+        [subjectId, schoolId],
+      );
+      await client.query(`
+        UPDATE teachers SET subject_id = NULL, subject = 'Umum'
+        WHERE subject_id = $1 AND school_id = $2
+      `, [subjectId, schoolId]);
+      const { rows } = await client.query(
+        "DELETE FROM subjects WHERE id = $1 AND school_id = $2 RETURNING id",
+        [subjectId, schoolId],
+      );
+      return rows.length > 0;
+    });
   }
 
   async function saveClass(schoolId, classId, { name, gradeLevel }) {
@@ -490,18 +612,11 @@ export function createAdminModel(database) {
   }
 
   async function deleteClass(schoolId, classId) {
-    return withTransaction(database, async (client) => {
-      const { rows: [schoolClass] } = await client.query(`
-        SELECT c.id,
-          EXISTS (SELECT 1 FROM class_members cm WHERE cm.class_id = c.id) AS has_students,
-          EXISTS (SELECT 1 FROM exam_classes ec WHERE ec.class_id = c.id) AS has_exams
-        FROM classes c WHERE c.id = $1 AND c.school_id = $2 FOR UPDATE
-      `, [classId, schoolId]);
-      if (!schoolClass) return false;
-      if (schoolClass.has_students || schoolClass.has_exams) throw new Error("CLASS_IN_USE");
-      await client.query("DELETE FROM classes WHERE id = $1 AND school_id = $2", [classId, schoolId]);
-      return true;
-    });
+    const { rows } = await database.query(
+      "DELETE FROM classes WHERE id = $1 AND school_id = $2 RETURNING id",
+      [classId, schoolId],
+    );
+    return rows.length > 0;
   }
 
   async function getSchool(schoolId) {
@@ -571,38 +686,37 @@ export function createAdminModel(database) {
     }).then((updatedId) => updatedId ? getSchool(updatedId) : null);
   }
 
-  async function deleteOrDeactivateSchool(schoolId) {
-    const result = await withTransaction(database, async (client) => {
+  async function deleteSchool(schoolId) {
+    return withTransaction(database, async (client) => {
       const { rows: [school] } = await client.query(
         "SELECT id FROM schools WHERE id = $1 FOR UPDATE",
         [schoolId],
       );
       if (!school) return { deleted: false, notFound: true };
-      const { rows: [usage] } = await client.query(`
-        SELECT
-          EXISTS (SELECT 1 FROM users WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM teachers WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM students WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM classes WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM subjects WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM exams WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM question_bank WHERE school_id = $1) OR
-          EXISTS (SELECT 1 FROM admin_password_reset_logs WHERE school_id = $1)
-          AS has_data
+      const { rows: exams } = await client.query(
+        "SELECT id FROM exams WHERE school_id = $1",
+        [schoolId],
+      );
+      await deleteExams(client, schoolId, exams.map((exam) => exam.id));
+      await client.query("DELETE FROM remedial_requests WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM exam_activity_events WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM exam_results WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM exam_attempts WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM question_bank WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM questions WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM teacher_exam_settings WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM admin_password_reset_logs WHERE school_id = $1", [schoolId]);
+      await client.query(`
+        DELETE FROM sessions
+        WHERE user_id IN (SELECT id FROM users WHERE school_id = $1)
       `, [schoolId]);
-      if (usage.has_data) {
-        await client.query("UPDATE schools SET is_active = FALSE WHERE id = $1", [schoolId]);
-        await client.query(`
-          DELETE FROM sessions
-          WHERE user_id IN (SELECT id FROM users WHERE school_id = $1)
-        `, [schoolId]);
-        return { deleted: false, schoolId };
-      }
+      await client.query("DELETE FROM teachers WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM users WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM classes WHERE school_id = $1", [schoolId]);
+      await client.query("DELETE FROM subjects WHERE school_id = $1", [schoolId]);
       await client.query("DELETE FROM schools WHERE id = $1", [schoolId]);
       return { deleted: true };
     });
-    if (result.notFound || result.deleted) return result;
-    return { ...result, school: await getSchool(result.schoolId) };
   }
 
   async function updateAdminProfile(userId, { fullName, email }) {
@@ -681,8 +795,8 @@ export function createAdminModel(database) {
     async updateSchool(schoolId, input) {
       return updateSchool(schoolId, input);
     },
-    async deleteOrDeactivateSchool(schoolId) {
-      return deleteOrDeactivateSchool(schoolId);
+    async deleteSchool(schoolId) {
+      return deleteSchool(schoolId);
     },
     async updateAdminProfile(userId, input) {
       return updateAdminProfile(userId, input);

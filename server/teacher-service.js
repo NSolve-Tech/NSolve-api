@@ -262,9 +262,17 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       return { question };
     },
     async deleteQuestion(user, id) {
-      const deleted = await model.deleteQuestion(id, await getProfile(user));
-      if (!deleted) throw new ApiError(404, "Soal tidak ditemukan.");
-      return { deleted: true };
+      try {
+        const deleted = await model.deleteQuestion(id, await getProfile(user));
+        if (!deleted) throw new ApiError(404, "Soal tidak ditemukan.");
+        return { deleted: true };
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (error.code === "23503") {
+          throw new ApiError(409, "Soal masih memiliki data terkait yang belum dapat dibersihkan.");
+        }
+        throw error;
+      }
     },
     async listClasses(user) {
       return { classes: await model.listClasses(await getProfile(user)) };
@@ -439,9 +447,20 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       }
     },
     async deleteExam(user, id) {
-      const deleted = await model.deleteExam(id, await getProfile(user));
-      if (!deleted) throw new ApiError(404, "Paket ujian tidak ditemukan.");
-      return { deleted: true };
+      try {
+        const deleted = await model.deleteExam(id, await getProfile(user));
+        if (!deleted) throw new ApiError(404, "Paket ujian tidak ditemukan.");
+        return { deleted: true };
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (error.code === "23503") {
+          throw new ApiError(
+            409,
+            "Ujian masih memiliki data terkait yang belum dapat dibersihkan.",
+          );
+        }
+        throw error;
+      }
     },
     async createExam(user, input) {
       const profile = await getProfile(user);

@@ -99,11 +99,9 @@ export function createAdminService(model) {
     },
     async deleteSchool(user, schoolId) {
       requirePlatformAdmin(user);
-      const result = await model.deleteOrDeactivateSchool(schoolId);
+      const result = await model.deleteSchool(schoolId);
       if (result.notFound) throw new ApiError(404, "Sekolah tidak ditemukan.");
-      return result.deleted
-        ? { deleted: true, deactivated: false }
-        : { deleted: false, deactivated: true, school: result.school };
+      return { deleted: true };
     },
     async listTeacherAssignments(user) {
       return model.listTeacherAssignments(getSchoolId(user));
@@ -301,7 +299,7 @@ export function createAdminService(model) {
         return { deleted: true };
       } catch (error) {
         if (error.code === "23503") {
-          throw new ApiError(409, "Akun memiliki riwayat atau data terkait. Nonaktifkan akun sebagai gantinya.");
+          throw new ApiError(409, "Akun tidak dapat dihapus karena masih memiliki data terkait yang belum dapat dibersihkan.");
         }
         throw error;
       }
@@ -351,17 +349,10 @@ export function createAdminService(model) {
     },
     async deleteClass(user, classId) {
       assertSchoolActive(user);
-      try {
-        if (!await model.deleteClass(getSchoolId(user), classId)) {
-          throw new ApiError(404, "Kelas tidak ditemukan.");
-        }
-        return { deleted: true };
-      } catch (error) {
-        if (error.message === "CLASS_IN_USE") {
-          throw new ApiError(409, "Kelas masih memiliki siswa atau jadwal ujian sehingga tidak dapat dihapus.");
-        }
-        throw error;
+      if (!await model.deleteClass(getSchoolId(user), classId)) {
+        throw new ApiError(404, "Kelas tidak ditemukan.");
       }
+      return { deleted: true };
     },
     async listSubjects(user) {
       return { subjects: await model.listSubjects(getSchoolId(user)) };
@@ -388,7 +379,7 @@ export function createAdminService(model) {
         return { deleted: true };
       } catch (error) {
         if (error.code === "23503") {
-          throw new ApiError(409, "Mata pelajaran masih digunakan oleh guru atau soal.");
+          throw new ApiError(409, "Mata pelajaran tidak dapat dihapus karena masih memiliki data terkait yang belum dapat dibersihkan.");
         }
         throw error;
       }

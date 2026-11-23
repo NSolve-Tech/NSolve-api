@@ -549,12 +549,27 @@ export function createTeacherModel(database) {
       return updated ? getQuestion(id, profile.id) : null;
     },
     async deleteQuestion(id, profile) {
-      const { rows } = await database.query(`
-        DELETE FROM question_bank
-        WHERE id = $1 AND teacher_id = $2 AND school_id = $3
-        RETURNING id
-      `, [id, profile.id, profile.schoolId]);
-      return rows.length > 0;
+      return withTransaction(database, async (client) => {
+        const { rows: [question] } = await client.query(`
+          SELECT id FROM question_bank
+          WHERE id = $1 AND teacher_id = $2 AND school_id = $3
+          FOR UPDATE
+        `, [id, profile.id, profile.schoolId]);
+        if (!question) return false;
+        await client.query(
+          "UPDATE exam_questions SET bank_question_id = NULL WHERE bank_question_id = $1",
+          [id],
+        );
+        await client.query(
+          "DELETE FROM question_bank_options WHERE question_id = $1",
+          [id],
+        );
+        await client.query(
+          "DELETE FROM question_bank WHERE id = $1 AND teacher_id = $2 AND school_id = $3",
+          [id, profile.id, profile.schoolId],
+        );
+        return true;
+      });
     },
     async listExams(profile) {
       await markCompletedExams(profile.id, new Date());
@@ -683,16 +698,70 @@ export function createTeacherModel(database) {
       return updated ? getExam(examId, profile.id) : null;
     },
     async deleteExam(id, profile) {
-      const { rows } = await database.query(`
-        DELETE FROM exams
-        WHERE id = $1 AND school_id = $2
-          AND EXISTS (
-            SELECT 1 FROM teacher_exam_settings
-            WHERE exam_id = $1 AND teacher_id = $3
-          )
-        RETURNING id
-      `, [id, profile.schoolId, profile.id]);
-      return rows.length > 0;
+      return withTransaction(database, async (client) => {
+        const { rows: [exam] } = await client.query(`
+          SELECT e.id FROM exams e
+          JOIN teacher_exam_settings tes ON tes.exam_id = e.id
+          WHERE e.id = $1 AND e.school_id = $2 AND tes.teacher_id = $3
+          FOR UPDATE OF e
+        `, [id, profile.schoolId, profile.id]);
+        if (!exam) return false;
+        const { rows: bankQuestions } = await client.query(`
+          SELECT DISTINCT qb.id
+          FROM exam_questions eq
+          JOIN question_bank qb ON qb.id = eq.bank_question_id
+          WHERE eq.exam_id = $1 AND qb.teacher_id = $2 AND qb.school_id = $3
+        `, [id, profile.id, profile.schoolId]);
+        const bankQuestionIds = bankQuestions.map((question) => question.id);
+        const { rows: importedQuestions } = await client.query(`
+          SELECT DISTINCT q.id
+          FROM exam_questions eq
+          JOIN questions q ON q.id = eq.imported_question_id
+          WHERE eq.exam_id = $1 AND q.teacher_id = $2 AND q.school_id = $3
+        `, [id, profile.id, profile.schoolId]);
+        const importedQuestionIds = importedQuestions.map((question) => question.id);
+        await client.query(`
+          DELETE FROM remedial_requests
+          WHERE school_id = $1 AND (exam_id = $2 OR scheduled_exam_id = $2)
+        `, [profile.schoolId, id]);
+        await client.query(
+          "DELETE FROM exam_results WHERE school_id = $1 AND exam_id = $2",
+          [profile.schoolId, id],
+        );
+        await client.query(
+          "DELETE FROM exam_attempts WHERE school_id = $1 AND exam_id = $2",
+          [profile.schoolId, id],
+        );
+        await client.query(
+          "DELETE FROM exams WHERE id = $1 AND school_id = $2",
+          [id, profile.schoolId],
+        );
+        if (bankQuestionIds.length) {
+          await client.query(
+            "UPDATE exam_questions SET bank_question_id = NULL WHERE bank_question_id = ANY($1::text[])",
+            [bankQuestionIds],
+          );
+          await client.query(
+            "DELETE FROM question_bank_options WHERE question_id = ANY($1::text[])",
+            [bankQuestionIds],
+          );
+          await client.query(
+            "DELETE FROM question_bank WHERE id = ANY($1::text[]) AND teacher_id = $2 AND school_id = $3",
+            [bankQuestionIds, profile.id, profile.schoolId],
+          );
+        }
+        if (importedQuestionIds.length) {
+          await client.query(
+            "UPDATE exam_questions SET imported_question_id = NULL WHERE imported_question_id = ANY($1::text[])",
+            [importedQuestionIds],
+          );
+          await client.query(
+            "DELETE FROM questions WHERE id = ANY($1::text[]) AND teacher_id = $2 AND school_id = $3",
+            [importedQuestionIds, profile.id, profile.schoolId],
+          );
+        }
+        return true;
+      });
     },
     async createExam(profile, input, now) {
       const examId = randomUUID();
