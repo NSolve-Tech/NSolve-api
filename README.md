@@ -53,7 +53,7 @@ Panel admin tersedia pada `http://localhost:5174` dan hanya dapat diakses akun d
 
 ## PostgreSQL ter-host
 
-Railway dan Supabase dapat dikonfigurasi dengan `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, dan `DATABASE_SSL=true`. Alternatifnya, isi `DATABASE_URL` dengan connection string PostgreSQL dan set `DATABASE_SSL=true` bila penyedia mewajibkan TLS. Jangan commit file `.env` atau kredensial database.
+Railway dan Supabase dapat dikonfigurasi dengan `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, dan `DATABASE_SSL=true`. Alternatifnya, isi `DATABASE_URL` dengan connection string PostgreSQL dan set `DATABASE_SSL=true` bila penyedia mewajibkan TLS. Untuk Neon, gunakan `DATABASE_URL` (koneksi pooled) saat API berjalan dan `DATABASE_URL_UNPOOLED` (koneksi langsung) untuk migrasi. `npm run migrate` otomatis memilih `DATABASE_URL_UNPOOLED` bila tersedia. Jangan commit file `.env` atau kredensial database.
 
 Terapkan migrasi sebelum merilis versi API baru:
 
