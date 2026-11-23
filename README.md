@@ -63,6 +63,10 @@ npm run migrate
 
 Jalankan `npm run seed` hanya untuk mengisi skenario development. Seed demo tidak boleh diaktifkan pada production (`SEED_DEMO_DATA=false`).
 
+## Deploy ke Vercel
+
+Vercel dapat menjalankan Express API dari `index.js` sebagai satu Vercel Function. Hubungkan repo API, gunakan root directory repo, dan biarkan framework terdeteksi otomatis. Atur environment variables `NODE_ENV=production`, `SEED_DEMO_DATA=false`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `DATABASE_SSL=true`, `JWT_SECRET`, `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None`, `TRUST_PROXY=true`, dan `FRONTEND_ORIGINS` ke origin frontend tanpa trailing slash. Gunakan koneksi pooled Neon untuk `DATABASE_URL`, koneksi langsung untuk `DATABASE_URL_UNPOOLED`, dan jalankan `npm run migrate` secara manual sebelum deploy schema baru.
+
 ## Memindahkan data SQLite lama
 
 1. Cadangkan file SQLite lama dan konfigurasi koneksi PostgreSQL pada `.env`.
