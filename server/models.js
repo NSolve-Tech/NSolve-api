@@ -17,6 +17,7 @@ function mapExam(row) {
     closesAt: row.closes_at,
     questionCount: Number(row.question_count),
     kkm: Number(row.kkm ?? 75),
+    showScore: row.show_score !== false,
   };
 }
 
@@ -35,6 +36,7 @@ function mapAttempt(row) {
 
 function mapResult(row) {
   if (!row) return null;
+  const showScore = row.show_score !== false;
   return {
     id: row.id,
     attemptId: row.attempt_id,
@@ -42,14 +44,15 @@ function mapResult(row) {
     examTitle: row.exam_title,
     subject: row.subject,
     code: row.code,
-    score: Number(row.score),
-    correctCount: Number(row.correct_count),
-    wrongCount: Number(row.wrong_count),
-    unansweredCount: Number(row.unanswered_count),
+    score: showScore ? Number(row.score) : null,
+    showScore,
+    correctCount: showScore ? Number(row.correct_count) : null,
+    wrongCount: showScore ? Number(row.wrong_count) : null,
+    unansweredCount: showScore ? Number(row.unanswered_count) : null,
     durationSeconds: Number(row.duration_seconds),
     createdAt: row.created_at,
     kkm: Number(row.kkm ?? 75),
-    passed: Number(row.score) >= Number(row.kkm ?? 75),
+    passed: showScore ? Number(row.score) >= Number(row.kkm ?? 75) : null,
     remedialStatus: row.remedial_status ?? null,
   };
 }
@@ -58,7 +61,8 @@ export function createStudentModel(database) {
   const examQuery = `
     SELECT e.*, COUNT(q.id)::INTEGER AS question_count,
       EXISTS (SELECT 1 FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS requires_token,
-      (SELECT kkm FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS kkm
+      (SELECT kkm FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS kkm,
+      (SELECT show_score FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS show_score
     FROM exams e
     LEFT JOIN exam_questions q ON q.exam_id = e.id
     WHERE e.id = $1
@@ -66,7 +70,7 @@ export function createStudentModel(database) {
   `;
   const resultQuery = `
     SELECT r.*, e.title AS exam_title, e.subject, e.code,
-      tes.kkm,
+      tes.kkm, tes.show_score,
       (SELECT status FROM remedial_requests rr WHERE rr.result_id = r.id) AS remedial_status
     FROM exam_results r
     JOIN exams e ON e.id = r.exam_id
@@ -234,7 +238,8 @@ export function createStudentModel(database) {
       const { rows } = await database.query(`
         SELECT e.*, COUNT(q.id)::INTEGER AS question_count,
           EXISTS (SELECT 1 FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS requires_token,
-          (SELECT kkm FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS kkm
+          (SELECT kkm FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS kkm,
+          (SELECT show_score FROM teacher_exam_settings tes WHERE tes.exam_id = e.id) AS show_score
         FROM exams e
         LEFT JOIN exam_questions q ON q.exam_id = e.id
         WHERE EXISTS (
@@ -566,7 +571,7 @@ export function createStudentModel(database) {
     async listResults(userId) {
       const { rows } = await database.query(`
         SELECT r.*, e.title AS exam_title, e.subject, e.code,
-          tes.kkm,
+          tes.kkm, tes.show_score,
           (SELECT status FROM remedial_requests rr WHERE rr.result_id = r.id) AS remedial_status
         FROM exam_results r
         JOIN exams e ON e.id = r.exam_id
@@ -580,6 +585,7 @@ export function createStudentModel(database) {
       const { rows: [resultRow] } = await database.query(resultQuery, [id, userId]);
       const result = mapResult(resultRow);
       if (!result) return null;
+      if (!result.showScore) return { ...result, questions: [] };
       const { rows: questions } = await database.query(`
         SELECT q.id, q.position, q.prompt, q.type, a.selected_option_id,
           correct.id AS correct_option_id
@@ -643,7 +649,7 @@ export function createStudentModel(database) {
       return withTransaction(database, async (client) => {
         const { rows: [result] } = await client.query(`
           SELECT r.id, r.exam_id, r.school_id, r.score, e.title, e.subject,
-            tes.teacher_id, tes.kkm
+            tes.teacher_id, tes.kkm, tes.show_score
           FROM exam_results r
           JOIN exams e ON e.id = r.exam_id
           JOIN teacher_exam_settings tes ON tes.exam_id = e.id
@@ -651,6 +657,7 @@ export function createStudentModel(database) {
           FOR UPDATE OF r
         `, [resultId, userId]);
         if (!result) return null;
+        if (!result.show_score) throw new Error("SCORE_NOT_VISIBLE");
         if (Number(result.score) >= Number(result.kkm)) {
           throw new Error("REMEDIAL_NOT_NEEDED");
         }

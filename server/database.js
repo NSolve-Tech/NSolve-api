@@ -21,6 +21,8 @@ const migrations = [
   { version: 13, path: "migrations/013_admin_password_reset_logs.sql" },
   { version: 14, path: "migrations/014_school_directory_and_status.sql" },
   { version: 15, path: "migrations/015_standard_classes_for_all_schools.sql" },
+  { version: 16, path: "migrations/016_exam_score_visibility.sql" },
+  { version: 17, path: "migrations/017_exam_exit_activity.sql" },
 ];
 
 export const latestSchemaVersion = migrations.at(-1).version;

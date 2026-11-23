@@ -9,18 +9,6 @@ const QUESTION_TYPES = new Set([
   "essay",
 ]);
 const DIFFICULTIES = new Set(["mudah", "sedang", "sulit"]);
-const SUBJECTS = new Set([
-  "Kimia",
-  "Fisika",
-  "Matematika",
-  "Biologi",
-  "Bahasa Indonesia",
-  "Bahasa Inggris",
-  "PPKN",
-  "Ekonomi",
-  "Sejarah",
-  "Informatika",
-]);
 
 function isText(value, { min = 1, max = 2000 } = {}) {
   return typeof value === "string" && value.trim().length >= min && value.trim().length <= max;
@@ -34,7 +22,7 @@ function validateQuestion(input) {
     throw new ApiError(400, "Bab wajib diisi maksimal 120 karakter.");
   }
   const subject = input.subject ?? "Kimia";
-  if (!SUBJECTS.has(subject)) {
+  if (!isText(subject, { max: 100 })) {
     throw new ApiError(400, "Mata pelajaran tidak valid.");
   }
   if (!isText(input.gradeLevel, { max: 30 })) {
@@ -84,7 +72,7 @@ function validateQuestion(input) {
   }
   return {
     academicYear,
-    subject,
+    subject: subject.trim(),
     gradeLevel: input.gradeLevel.trim(),
     chapter: input.chapter.trim(),
     difficulty: input.difficulty,
@@ -144,6 +132,9 @@ function validateExam(input) {
   if (input.randomizeQuestions !== undefined && typeof input.randomizeQuestions !== "boolean") {
     throw new ApiError(400, "Pengaturan urutan soal tidak valid.");
   }
+  if (input.showScore !== undefined && typeof input.showScore !== "boolean") {
+    throw new ApiError(400, "Pengaturan tampilan nilai tidak valid.");
+  }
   if (input.opensAt && !Number.isFinite(Date.parse(input.opensAt))) {
     throw new ApiError(400, "Waktu mulai tidak valid.");
   }
@@ -151,12 +142,12 @@ function validateExam(input) {
     throw new ApiError(400, "Waktu selesai tidak valid.");
   }
   const subject = input.subject;
-  if (!SUBJECTS.has(subject)) {
+  if (!isText(subject, { max: 100 })) {
     throw new ApiError(400, "Mata pelajaran tidak valid.");
   }
   return {
     title: input.title.trim(),
-    subject,
+    subject: subject.trim(),
     description: typeof input.description === "string" ? input.description.trim() : "",
     academicYear,
     examType,
@@ -170,6 +161,7 @@ function validateExam(input) {
     randomizeQuestions: input.randomizeQuestions !== false,
     randomizeOptions: input.randomizeOptions !== false,
     autoGrade: input.autoGrade !== false,
+    showScore: input.showScore !== false,
     questionIds: input.questionIds,
     classIds: input.classIds,
     opensAt: input.opensAt,
@@ -184,9 +176,19 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
     return profile;
   }
 
+  async function requireSchoolSubject(profile, subject) {
+    const subjects = await model.listSubjects(profile);
+    if (!subjects.some((item) => item.name === subject)) {
+      throw new ApiError(400, "Mata pelajaran belum didaftarkan oleh Admin sekolah.");
+    }
+  }
+
   return {
     async getProfile(user) {
       return { teacher: await getProfile(user) };
+    },
+    async listSubjects(user) {
+      return { subjects: await model.listSubjects(await getProfile(user)) };
     },
     async updateProfile(user, input) {
       if (!input || typeof input !== "object") {
@@ -227,11 +229,9 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
     },
     async createQuestion(user, input) {
       const profile = await getProfile(user);
-      const question = await model.createQuestion(
-        profile,
-        validateQuestion({ ...input, subject: input?.subject ?? profile.subject }),
-        now().toISOString(),
-      );
+      const validated = validateQuestion({ ...input, subject: input?.subject ?? profile.subject });
+      await requireSchoolSubject(profile, validated.subject);
+      const question = await model.createQuestion(profile, validated, now().toISOString());
       return { question };
     },
     async importQuestions(user, input) {
@@ -243,6 +243,8 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       const questions = input.questions.map((question) =>
         validateQuestion({ ...question, subject: question?.subject ?? profile.subject }),
       );
+      await Promise.all([...new Set(questions.map((question) => question.subject))]
+        .map((subject) => requireSchoolSubject(profile, subject)));
       return {
         questions: await model.createQuestions(
           profile,
@@ -253,11 +255,9 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
     },
     async updateQuestion(user, id, input) {
       const profile = await getProfile(user);
-      const question = await model.updateQuestion(
-        id,
-        profile,
-        validateQuestion({ ...input, subject: input?.subject ?? profile.subject }),
-      );
+      const validated = validateQuestion({ ...input, subject: input?.subject ?? profile.subject });
+      await requireSchoolSubject(profile, validated.subject);
+      const question = await model.updateQuestion(id, profile, validated);
       if (!question) throw new ApiError(404, "Soal tidak ditemukan.");
       return { question };
     },
@@ -354,6 +354,8 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
         questionIds: input?.questionIds ?? [],
         classIds: input?.classIds,
       });
+      const profile = await getProfile(user);
+      await requireSchoolSubject(profile, validated.subject);
       if (!Array.isArray(input?.questions) || input.questions.length < 1 ||
           input.questions.length > 500) {
         throw new ApiError(400, "Daftar soal ujian tidak valid.");
@@ -398,7 +400,7 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
         throw new ApiError(400, "Token harus berformat tiga huruf, dua angka, dan satu simbol.");
       }
       try {
-        const exam = await model.updateExam(id, await getProfile(user), {
+        const exam = await model.updateExam(id, profile, {
           ...validated,
           status: input.status,
           code,
@@ -444,10 +446,12 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
     async createExam(user, input) {
       const profile = await getProfile(user);
       try {
+        const validated = validateExam({ ...input, subject: input?.subject ?? profile.subject });
+        await requireSchoolSubject(profile, validated.subject);
         return {
           exam: await model.createExam(
             profile,
-            validateExam({ ...input, subject: input?.subject ?? profile.subject }),
+            validated,
             now().toISOString(),
           ),
         };

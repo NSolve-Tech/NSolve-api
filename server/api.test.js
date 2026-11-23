@@ -495,6 +495,16 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const updatedProfile = await profileUpdate.json();
   assert.equal(updatedProfile.teacher.fullName, "Nailah Husna, S.Pd.");
 
+  const schoolSubjectsResponse = await fetch(`${baseUrl}/api/admin/subjects`, {
+    headers: { cookie: adminCookie, ...originHeaders },
+  });
+  const schoolSubjects = (await schoolSubjectsResponse.json()).subjects;
+  if (!schoolSubjects.some((item) => item.name === "Fisika")) {
+    const addPhysicsSubject = await postJson(`${baseUrl}/api/admin/subjects`, {
+      name: "Fisika",
+    }, { cookie: adminCookie, ...originHeaders });
+    assert.equal(addPhysicsSubject.status, 201);
+  }
   const createdQuestionResponse = await postJson(`${baseUrl}/api/teacher/questions`, {
     academicYear: "2026/2027",
     subject: "Fisika",
@@ -574,6 +584,12 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.ok(secondTargetClass);
   assert.equal(unrelatedClass, undefined);
   assert.equal(classes.length, 2);
+  const teacherSubjectsResponse = await fetch(`${baseUrl}/api/teacher/subjects`, {
+    headers: { cookie: teacherCookie, ...originHeaders },
+  });
+  assert.equal(teacherSubjectsResponse.status, 200);
+  const teacherSubjects = (await teacherSubjectsResponse.json()).subjects;
+  assert.ok(teacherSubjects.some((item) => item.name === "Kimia"));
   const availableClassesResponse = await fetch(`${baseUrl}/api/teacher/available-classes`, {
     headers: { cookie: teacherCookie, ...originHeaders },
   });
@@ -584,6 +600,19 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   const unassignedClass = registrationOptions.classes.find((item) => item.name === "X 1");
   assert.ok(unassignedClass);
+  const unregisteredSubjectExam = await postJson(`${baseUrl}/api/teacher/exams`, {
+    title: "Ujian Mata Pelajaran Belum Terdaftar",
+    subject: "Mata Pelajaran Khusus Tidak Terdaftar",
+    academicYear: "2026/2027",
+    semester: "Genap",
+    gradeLevel: "XI",
+    durationMinutes: 45,
+    mcQuestionCount: 1,
+    essayQuestionCount: 0,
+    questionIds: ["question-kimia-redoks-001"],
+    classIds: [targetClass.id],
+  }, { cookie: teacherCookie, ...originHeaders });
+  assert.equal(unregisteredSubjectExam.status, 400);
   const unassignedClassExam = await postJson(`${baseUrl}/api/teacher/exams`, {
     title: "Ujian Kelas X 1",
     subject: "Kimia",
@@ -618,6 +647,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(examResponse.status, 201);
   const { exam } = await examResponse.json();
+  assert.equal(exam.showScore, true);
   assert.equal(exam.questions.length, 2);
   assert.equal(exam.status, "draft");
   assert.equal(exam.examType, "SAS");
@@ -750,11 +780,13 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     questionIds: [createdQuestion.id],
     classIds: [secondTargetClass.id],
     visibility: "public",
+    showScore: false,
   }, { cookie: teacherCookie, ...originHeaders });
   assert.equal(secondExamResponse.status, 201);
   const { exam: secondExam } = await secondExamResponse.json();
   assert.equal(secondExam.subject, "Fisika");
   assert.equal(secondExam.questions[0].points, 7);
+  assert.equal(secondExam.showScore, false);
   const secondPublishResponse = await postJson(
     `${baseUrl}/api/teacher/exams/${secondExam.id}/publish`,
     {
@@ -863,7 +895,9 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const otherTenantEvents = await fetch(`${baseUrl}/api/admin/exam-activity`, {
     headers: { cookie: otherAdminCookie, ...originHeaders },
   });
-  assert.deepEqual((await otherTenantEvents.json()).events, []);
+  const otherTenantActivity = await otherTenantEvents.json();
+  assert.deepEqual(otherTenantActivity.events, []);
+  assert.deepEqual(otherTenantActivity.sessions, []);
   const crossTenantAssignment = await fetch(
     `${baseUrl}/api/admin/teachers/teacher-emma-murniati/classes`,
     {
@@ -939,6 +973,8 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   const activityLog = await activityLogResponse.json();
   assert.equal(activityLog.events[0].eventType, "tab_hidden");
   assert.equal(activityLog.events[0].studentName, "Siswa XI 9");
+  assert.equal(activityLog.sessions[0].attemptId, attempt.id);
+  assert.equal(activityLog.sessions[0].violationCount, 1);
   const secondActivity = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/activity`,
     { attemptId: attempt.id, eventType: "window_blur" },
@@ -1125,6 +1161,11 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   }, { cookie: adminCookie, ...originHeaders });
   assert.equal(createSubject.status, 201);
   const { subject: adminSubject } = await createSubject.json();
+  const refreshedTeacherSubjects = await fetch(`${baseUrl}/api/teacher/subjects`, {
+    headers: { cookie: teacherCookie, ...originHeaders },
+  });
+  assert.ok((await refreshedTeacherSubjects.json()).subjects.some((item) =>
+    item.id === adminSubject.id));
   const subjectDelete = await fetch(`${baseUrl}/api/admin/subjects/${adminSubject.id}`, {
     method: "DELETE",
     headers: { cookie: adminCookie, ...originHeaders },
@@ -1236,6 +1277,47 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     { cookie: secondStudentCookie, ...originHeaders },
   );
   assert.equal(disqualifiedSubmit.status, 403);
+
+  const appClosedActivity = await postJson(
+    `${baseUrl}/api/student/exams/${exam.id}/activity`,
+    { attemptId: secondAttempt.id, eventType: "app_closed" },
+    { cookie: secondStudentCookie, ...originHeaders },
+  );
+  assert.equal(appClosedActivity.status, 201);
+  const updatedActivityLog = await fetch(`${baseUrl}/api/admin/exam-activity`, {
+    headers: { cookie: adminCookie, ...originHeaders },
+  });
+  const updatedActivity = await updatedActivityLog.json();
+  assert.ok(updatedActivity.events.some((event) => event.eventType === "app_closed"));
+  const closedSession = updatedActivity.sessions.find((session) =>
+    session.attemptId === secondAttempt.id);
+  assert.equal(closedSession.lastEventType, "app_closed");
+
+  await database.query(
+    "UPDATE teacher_exam_settings SET show_score = FALSE WHERE exam_id = $1",
+    [exam.id],
+  );
+  const hiddenResultResponse = await fetch(
+    `${baseUrl}/api/student/results/${result.id}`,
+    { headers: { cookie: studentCookie, ...originHeaders } },
+  );
+  assert.equal(hiddenResultResponse.status, 200);
+  const hiddenResult = (await hiddenResultResponse.json()).result;
+  assert.equal(hiddenResult.showScore, false);
+  assert.equal(hiddenResult.score, null);
+  assert.equal(hiddenResult.correctCount, null);
+  assert.deepEqual(hiddenResult.questions, []);
+  const hiddenResultsResponse = await fetch(`${baseUrl}/api/student/results`, {
+    headers: { cookie: studentCookie, ...originHeaders },
+  });
+  const hiddenResults = (await hiddenResultsResponse.json()).results;
+  assert.equal(hiddenResults.find((item) => item.id === result.id).score, null);
+  const hiddenRemedialRequest = await postJson(
+    `${baseUrl}/api/student/results/${result.id}/remedial`,
+    {},
+    { cookie: studentCookie, ...originHeaders },
+  );
+  assert.equal(hiddenRemedialRequest.status, 403);
 });
 
 test("production configuration requires secure cookies and PostgreSQL", () => {

@@ -45,6 +45,7 @@ function mapExam(row) {
     randomizeOptions: row.randomize_options,
     autoGrade: row.auto_grade,
     visibility: row.visibility ?? "private",
+    showScore: row.show_score !== false,
     questionCount: Number(row.question_count),
     participantCount: Number(row.participant_count),
     classes: row.classes ?? [],
@@ -58,6 +59,7 @@ const examRows = `
     tes.academic_year, tes.semester, tes.grade_level,
     tes.mc_question_count, tes.essay_question_count,
     tes.kkm, tes.randomize_questions, tes.randomize_options, tes.auto_grade, tes.visibility,
+    tes.show_score,
     tes.exam_type, tes.workflow_status,
     (SELECT COUNT(*)::INTEGER FROM exam_questions q WHERE q.exam_id = e.id) AS question_count,
     (SELECT COUNT(*)::INTEGER FROM exam_classes ec
@@ -321,6 +323,15 @@ export function createTeacherModel(database) {
         positionTitle: row.position_title,
         academicYear: row.academic_year,
       } : null;
+    },
+    async listSubjects(profile) {
+      const { rows } = await database.query(`
+        SELECT id, name
+        FROM subjects
+        WHERE school_id = $1
+        ORDER BY name
+      `, [profile.schoolId]);
+      return rows;
     },
     async updateProfile(profile, input) {
       const subjectId = await withTransaction(database, async (client) => {
@@ -605,15 +616,16 @@ export function createTeacherModel(database) {
           UPDATE teacher_exam_settings
           SET academic_year = $1, semester = $2, grade_level = $3,
               exam_type = $4, visibility = $5, mc_question_count = $6,
-              essay_question_count = $7, kkm = $8,
-              randomize_questions = $9, randomize_options = $10, auto_grade = $11,
-              workflow_status = COALESCE($12, workflow_status)
-          WHERE exam_id = $13 AND teacher_id = $14
+              essay_question_count = $7, kkm = $8, show_score = $9,
+              randomize_questions = $10, randomize_options = $11, auto_grade = $12,
+              workflow_status = COALESCE($13, workflow_status)
+          WHERE exam_id = $14 AND teacher_id = $15
         `, [
           input.academicYear, input.semester, input.gradeLevel,
           input.examType, input.visibility, input.mcQuestionCount,
-          input.essayQuestionCount, input.kkm, input.randomizeQuestions,
-          input.randomizeOptions, input.autoGrade, input.status ?? null, id, profile.id,
+          input.essayQuestionCount, input.kkm, input.showScore,
+          input.randomizeQuestions, input.randomizeOptions, input.autoGrade,
+          input.status ?? null, id, profile.id,
         ]);
         await client.query("DELETE FROM exam_questions WHERE exam_id = $1", [id]);
         for (const [index, question] of input.questions.entries()) {
@@ -727,13 +739,13 @@ export function createTeacherModel(database) {
           INSERT INTO teacher_exam_settings (
             exam_id, teacher_id, school_id, academic_year, semester, grade_level,
             mc_question_count, essay_question_count, randomize_questions,
-            randomize_options, auto_grade, workflow_status, exam_type, visibility, kkm
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14)
+            randomize_options, auto_grade, workflow_status, exam_type, visibility, kkm, show_score
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15)
         `, [
           examId, profile.id, profile.schoolId, input.academicYear, input.semester,
           input.gradeLevel, input.mcQuestionCount, input.essayQuestionCount,
           input.randomizeQuestions, input.randomizeOptions, input.autoGrade, input.examType,
-          input.visibility, input.kkm,
+          input.visibility, input.kkm, input.showScore,
         ]);
         for (const [index, question] of questionRows.entries()) {
           const examQuestionId = randomUUID();

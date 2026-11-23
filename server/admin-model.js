@@ -92,6 +92,42 @@ export function createAdminModel(database) {
     return rows;
   }
 
+  async function listActiveExamSessions(schoolId) {
+    const { rows } = await database.query(`
+      SELECT a.id AS "attemptId", a.user_id AS "studentId",
+        u.full_name AS "studentName", e.id AS "examId", e.title AS "examTitle",
+        (
+          SELECT c.name
+          FROM exam_classes ec
+          JOIN class_members cm ON cm.class_id = ec.class_id
+          JOIN classes c ON c.id = ec.class_id
+          WHERE ec.exam_id = a.exam_id AND cm.student_user_id = a.user_id
+            AND ec.school_id = a.school_id
+          ORDER BY c.name
+          LIMIT 1
+        ) AS "className",
+        a.started_at AS "startedAt", a.expires_at AS "expiresAt",
+        a.violation_count AS "violationCount", a.locked_until AS "lockedUntil",
+        a.disqualified_at AS "disqualifiedAt",
+        latest.event_type AS "lastEventType", latest.occurred_at AS "lastEventAt"
+      FROM exam_attempts a
+      JOIN users u ON u.id = a.user_id AND u.school_id = a.school_id
+      JOIN exams e ON e.id = a.exam_id AND e.school_id = a.school_id
+      LEFT JOIN LATERAL (
+        SELECT event_type, occurred_at
+        FROM exam_activity_events
+        WHERE attempt_id = a.id
+        ORDER BY occurred_at DESC
+        LIMIT 1
+      ) latest ON TRUE
+      WHERE a.school_id = $1 AND a.status = 'in_progress'
+        AND a.expires_at > NOW()
+      ORDER BY a.started_at DESC
+      LIMIT 100
+    `, [schoolId]);
+    return rows;
+  }
+
   async function listUsers(schoolId, role) {
     const { rows } = await database.query(`
       SELECT u.id, u.full_name AS "fullName", u.email, u.role,
@@ -587,6 +623,9 @@ export function createAdminModel(database) {
     },
     async listExamActivity(schoolId) {
       return listExamActivity(schoolId);
+    },
+    async listActiveExamSessions(schoolId) {
+      return listActiveExamSessions(schoolId);
     },
     async listUsers(schoolId, role) {
       return listUsers(schoolId, role);

@@ -234,6 +234,9 @@ export function createController(service, teacherService, adminService, cookieOp
       if (method === "GET" && path === "/api/teacher/profile") {
         return sendJson(response, 200, await teacherService.getProfile(teacher));
       }
+      if (method === "GET" && path === "/api/teacher/subjects") {
+        return sendJson(response, 200, await teacherService.listSubjects(teacher));
+      }
       if (method === "PUT" && path === "/api/teacher/profile") {
         return sendJson(response, 200, await teacherService.updateProfile(
           teacher,

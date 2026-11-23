@@ -17,6 +17,7 @@ const EXAM_ACTIVITY_TYPES = new Set([
   "window_blur",
   "fullscreen_exit",
   "print_screen",
+  "app_closed",
 ]);
 
 export class ApiError extends Error {
@@ -455,6 +456,9 @@ export function createStudentService(model, {
       } catch (error) {
         if (error.message === "REMEDIAL_NOT_NEEDED") {
           throw new ApiError(409, "Nilai Anda sudah memenuhi KKM; remedial tidak diperlukan.");
+        }
+        if (error.message === "SCORE_NOT_VISIBLE") {
+          throw new ApiError(403, "Guru menyembunyikan nilai ujian ini.");
         }
         throw error;
       }

@@ -128,7 +128,12 @@ export function createAdminService(model) {
       }
     },
     async listExamActivity(user) {
-      return { events: await model.listExamActivity(getSchoolId(user)) };
+      const schoolId = getSchoolId(user);
+      const [events, sessions] = await Promise.all([
+        model.listExamActivity(schoolId),
+        model.listActiveExamSessions(schoolId),
+      ]);
+      return { events, sessions };
     },
     async listUsers(user, role) {
       if (role !== undefined && !["student", "teacher", "admin"].includes(role)) {
