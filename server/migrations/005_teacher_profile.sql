@@ -1,0 +1,3 @@
+ALTER TABLE teachers
+  ADD COLUMN position_title TEXT NOT NULL DEFAULT 'Guru',
+  ADD COLUMN academic_year TEXT NOT NULL DEFAULT '2026/2027';

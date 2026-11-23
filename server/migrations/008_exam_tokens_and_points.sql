@@ -1,0 +1,5 @@
+ALTER TABLE question_bank
+  ADD COLUMN points DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (points > 0);
+
+ALTER TABLE exams
+  ADD COLUMN published_at TIMESTAMPTZ;

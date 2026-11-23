@@ -1,0 +1,44 @@
+{
+  "name": "nsolve-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "create-admin": "node server/create-admin.js",
+    "create-teacher": "node server/create-teacher.js",
+    "migrate": "node server/migrate.js",
+    "seed": "node server/run-seed.js",
+    "migrate:sqlite": "node server/migrate-sqlite.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NSolve-Tech/NSolve-api.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/NSolve-Tech/NSolve-api/issues"
+  },
+  "homepage": "https://github.com/NSolve-Tech/NSolve-api#readme",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.5",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.17",
+    "@electric-sql/pglite-socket": "^0.2.20"
+  }
+}
