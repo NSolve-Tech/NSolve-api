@@ -190,7 +190,7 @@ export function createTeacherModel(database) {
 
   async function listRemedialRequests(profile) {
     const { rows } = await database.query(`
-      SELECT rr.id, rr.status, rr.created_at AS "createdAt",
+      SELECT rr.id, rr.exam_id AS "examId", rr.status, rr.created_at AS "createdAt",
         rr.scheduled_exam_id AS "scheduledExamId",
         e.title AS "examTitle", e.subject, r.score, tes.kkm,
         u.full_name AS "studentName", u.id AS "studentId",

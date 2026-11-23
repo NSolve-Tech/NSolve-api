@@ -1056,6 +1056,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(teacherRemedials[0].studentName, "Siswa XI 9");
   assert.equal(teacherRemedials[0].className, "XI 9");
   assert.equal(teacherRemedials[0].kkm, 80);
+  assert.equal(teacherRemedials[0].examId, exam.id);
 
   const approveRemedial = await fetch(
     `${baseUrl}/api/teacher/remedial-requests/${remedialRequest.id}`,
@@ -1099,6 +1100,13 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   assert.equal(scheduleRemedial.status, 200);
   assert.equal((await scheduleRemedial.json()).request.status, "scheduled");
+  const examsAfterRemedialSchedule = await fetch(`${baseUrl}/api/student/exams`, {
+    headers: { cookie: studentCookie, ...originHeaders },
+  });
+  const studentExamsAfterRemedial = (await examsAfterRemedialSchedule.json()).exams;
+  const assignedRemedialExam = studentExamsAfterRemedial.find((item) => item.id === remedialExam.id);
+  assert.ok(assignedRemedialExam);
+  assert.equal(assignedRemedialExam.canStart, false);
 
   const editAfterStart = await fetch(`${baseUrl}/api/teacher/exams/${exam.id}`, {
     method: "PUT",
