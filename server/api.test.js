@@ -120,7 +120,7 @@ test("HTTP API requires class registration and keeps exam data empty without pub
   const registered = await postJson(`${baseUrl}/api/auth/register`, {
     fullName: "Siswa API",
     email: "api@example.test",
-    password: "rahasia123",
+    password: "1",
     schoolId: options.school.id,
     classId: options.classes[0].id,
   }, { origin });
@@ -158,14 +158,14 @@ test("HTTP API requires class registration and keeps exam data empty without pub
     body: JSON.stringify({
       fullName: "Siswa API Updated",
       email: "api-updated@example.test",
-      currentPassword: "rahasia123",
-      newPassword: "new-password-123",
+      currentPassword: "1",
+      newPassword: "2",
     }),
   });
-  assert.equal(passwordUpdate.status, 200);
+  assert.equal(passwordUpdate.status, 403);
   const loginResponse = await postJson(
     `${baseUrl}/api/auth/login`,
-    { email: "api-updated@example.test", password: "new-password-123" },
+    { email: "api-updated@example.test", password: "1" },
     { origin },
   );
   assert.equal(loginResponse.status, 200);
@@ -390,11 +390,12 @@ test("platform admins can switch schools while school admins stay scoped", async
       role: "teacher",
       subject: "Kimia",
       classIds: [createdClass.id],
+      password: "1",
     },
     { cookie: platformCookie, origin },
   );
   assert.equal(createTeacherResponse.status, 201);
-  assert.ok((await createTeacherResponse.json()).temporaryPassword);
+  assert.equal((await createTeacherResponse.json()).temporaryPassword, undefined);
 
   const createStudentResponse = await postJson(
     `${baseUrl}/api/admin/users?schoolId=${createdSchool.id}`,
@@ -403,19 +404,19 @@ test("platform admins can switch schools while school admins stay scoped", async
       email: "siswa@smanda.example.test",
       role: "student",
       classId: createdClass.id,
-      password: "student-password-123",
+      password: "1",
     },
     { cookie: platformCookie, origin },
   );
   assert.equal(createStudentResponse.status, 201);
-  assert.equal((await createStudentResponse.json()).temporaryPassword, null);
+  assert.equal((await createStudentResponse.json()).temporaryPassword, undefined);
   const { rows: [storedStudent] } = await database.query(`
     SELECT password_salt, password_hash FROM users WHERE email = $1
   `, ["siswa@smanda.example.test"]);
-  assert.notEqual(storedStudent.password_hash, "student-password-123");
+  assert.notEqual(storedStudent.password_hash, "1");
   assert.equal(
     storedStudent.password_hash,
-    scryptSync("student-password-123", storedStudent.password_salt, 64).toString("hex"),
+    scryptSync("1", storedStudent.password_salt, 64).toString("hex"),
   );
   const refreshedSchools = await fetch(`${baseUrl}/api/admin/schools`, {
     headers: { cookie: platformCookie, origin },
@@ -428,7 +429,7 @@ test("platform admins can switch schools while school admins stay scoped", async
   assert.equal(schoolSummary.classCount, 34);
   const studentCookie = (await postJson(
     `${baseUrl}/api/auth/login`,
-    { email: "siswa@smanda.example.test", password: "student-password-123" },
+    { email: "siswa@smanda.example.test", password: "1" },
     { origin },
   )).headers.get("set-cookie").split(";", 1)[0];
   const registrationOptions = await fetch(
@@ -1057,6 +1058,14 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(activityLog.sessions[0].attemptId, attempt.id);
   assert.equal(activityLog.sessions[0].lastQuestionNumber, 1);
   assert.equal(activityLog.sessions[0].violationCount, 1);
+  const teacherExamActivityResponse = await fetch(
+    `${baseUrl}/api/teacher/exams/${exam.id}/activity`,
+    { headers: { cookie: teacherCookie, ...originHeaders } },
+  );
+  assert.equal(teacherExamActivityResponse.status, 200);
+  const { events: teacherExamEvents } = await teacherExamActivityResponse.json();
+  assert.equal(teacherExamEvents[0].attemptId, attempt.id);
+  assert.equal(teacherExamEvents[0].className, "XI F 9");
   const secondActivity = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/activity`,
     { attemptId: attempt.id, questionNumber: 2, eventType: "window_blur" },
@@ -1264,12 +1273,34 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     subject: "Matematika",
     positionTitle: "Guru Matematika",
     classIds: [targetClass.id, secondTargetClass.id],
+    password: "1",
   }, { cookie: adminCookie, ...originHeaders });
   assert.equal(createTeacherAccount.status, 201);
-  const { user: createdTeacher, temporaryPassword: initialPassword } =
-    await createTeacherAccount.json();
+  const { user: createdTeacher } = await createTeacherAccount.json();
+  const initialPassword = "1";
   assert.equal(createdTeacher.role, "teacher");
   assert.deepEqual(createdTeacher.teacherClasses.map((item) => item.name).sort(), ["XI F 11", "XI F 9"]);
+  const updateTeacherWithoutPositionTitle = await fetch(
+    `${baseUrl}/api/admin/users/${createdTeacher.id}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie: adminCookie, ...originHeaders },
+      body: JSON.stringify({
+        fullName: createdTeacher.fullName,
+        email: createdTeacher.email,
+        role: "teacher",
+        isActive: true,
+        subject: "Matematika",
+        classIds: createdTeacher.teacherClasses.map((item) => item.id),
+      }),
+    },
+  );
+  assert.equal(updateTeacherWithoutPositionTitle.status, 200);
+  const { rows: [teacherPosition] } = await database.query(
+    "SELECT position_title FROM teachers WHERE user_id = $1",
+    [createdTeacher.id],
+  );
+  assert.equal(teacherPosition.position_title, "Guru Matematika");
   const createdTeacherLogin = await postJson(`${baseUrl}/api/auth/login`, {
     email: createdTeacher.email,
     password: initialPassword,
@@ -1277,12 +1308,14 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(createdTeacherLogin.status, 200);
   const resetPasswordResponse = await postJson(
     `${baseUrl}/api/admin/users/${createdTeacher.id}/reset-password`,
-    {},
+    { password: "2" },
     { cookie: adminCookie, ...originHeaders },
   );
   assert.equal(resetPasswordResponse.status, 200);
-  const { temporaryPassword: resetPassword, resetAt } = await resetPasswordResponse.json();
-  assert.match(resetPassword, /^NSolve-[A-Za-z0-9_-]{16}!$/);
+  const resetResult = await resetPasswordResponse.json();
+  const { resetAt } = resetResult;
+  assert.deepEqual(Object.keys(resetResult), ["resetAt"]);
+  const resetPassword = "2";
   assert.ok(resetAt);
   const { rows: [resetAccount] } = await database.query(
     "SELECT password_salt, password_hash FROM users WHERE id = $1",
@@ -1299,7 +1332,7 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(resetLogs[0].actorName, "Admin Sekolah");
   assert.equal(resetLogs[0].targetName, "Guru Baru");
   assert.ok(resetLogs[0].resetAt);
-  assert.equal(JSON.stringify(resetLogs).includes(resetPassword), false);
+  assert.equal("password" in resetLogs[0], false);
   const oldPasswordLogin = await postJson(`${baseUrl}/api/auth/login`, {
     email: createdTeacher.email,
     password: initialPassword,
@@ -1316,12 +1349,14 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     role: "teacher",
     subject: "Kimia",
     classIds: ["class-other-tenant"],
+    password: "1",
   }, { cookie: adminCookie, ...originHeaders });
   assert.equal(crossTenantUser.status, 400);
   const createAdminAccount = await postJson(`${baseUrl}/api/admin/users`, {
     fullName: "Admin Baru",
     email: "admin-baru@example.test",
     role: "admin",
+    password: "1",
   }, { cookie: adminCookie, ...originHeaders });
   assert.equal(createAdminAccount.status, 201);
   assert.equal((await createAdminAccount.json()).user.role, "admin");
@@ -1344,8 +1379,8 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   assert.equal(secondStudentAnswer.status, 200);
   const violationEvents = [
-    { eventType: "tab_hidden", questionNumber: 1 },
-    { eventType: "window_blur", questionNumber: 2 },
+    { eventType: "page_refresh", questionNumber: 1 },
+    { eventType: "back_navigation", questionNumber: 2 },
     { eventType: "app_closed", questionNumber: 1 },
   ];
   let finalViolation;
@@ -1402,6 +1437,10 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     headers: { cookie: adminCookie, ...originHeaders },
   });
   const updatedActivity = await updatedActivityLog.json();
+  assert.ok(updatedActivity.events.some((event) =>
+    event.attemptId === secondAttempt.id && event.eventType === "page_refresh"));
+  assert.ok(updatedActivity.events.some((event) =>
+    event.attemptId === secondAttempt.id && event.eventType === "back_navigation"));
   const autoSubmittedEvent = updatedActivity.events.find((event) =>
     event.attemptId === secondAttempt.id && event.violationNumber === 3);
   assert.equal(autoSubmittedEvent.eventType, "app_closed");
@@ -1586,6 +1625,39 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
       (SELECT COUNT(*) FROM exam_classes WHERE class_id = $1) AS exams
   `, [targetClass.id]);
   assert.deepEqual(Object.values(deletedClassData.rows[0]).map(Number), [0, 0, 0, 0]);
+
+  const mismatchedAdminPassword = await fetch(`${baseUrl}/api/admin/profile`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", cookie: adminCookie, ...originHeaders },
+    body: JSON.stringify({
+      fullName: "Admin Sekolah",
+      email: "admin@example.test",
+      newPassword: "1",
+      confirmPassword: "2",
+    }),
+  });
+  assert.equal(mismatchedAdminPassword.status, 400);
+  const adminPasswordUpdate = await fetch(`${baseUrl}/api/admin/profile`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", cookie: adminCookie, ...originHeaders },
+    body: JSON.stringify({
+      fullName: "Admin Sekolah",
+      email: "admin@example.test",
+      newPassword: "1",
+      confirmPassword: "1",
+    }),
+  });
+  assert.equal(adminPasswordUpdate.status, 200);
+  const oldAdminPasswordLogin = await postJson(`${baseUrl}/api/auth/login`, {
+    email: "admin@example.test",
+    password: "admin-password-123",
+  }, originHeaders);
+  assert.equal(oldAdminPasswordLogin.status, 401);
+  const newAdminPasswordLogin = await postJson(`${baseUrl}/api/auth/login`, {
+    email: "admin@example.test",
+    password: "1",
+  }, originHeaders);
+  assert.equal(newAdminPasswordLogin.status, 200);
 });
 
 test("production configuration requires secure cookies and PostgreSQL", () => {

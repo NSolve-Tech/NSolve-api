@@ -23,13 +23,6 @@ function assertSchoolActive(user) {
   }
 }
 
-function generateTemporaryPassword(role) {
-  const prefix = role
-    ? ({ student: "Siswa", teacher: "Guru", admin: "Admin" }[role] ?? "User")
-    : "NSolve";
-  return `${prefix}-${randomBytes(12).toString("base64url")}!`;
-}
-
 export function createAdminService(model) {
   return {
     async scopeAdmin(user, requestedSchoolId) {
@@ -167,16 +160,13 @@ export function createAdminService(model) {
           (typeof input.classId !== "string" || !input.classId)) {
         throw new ApiError(400, "Pilih kelas untuk akun siswa.");
       }
-      if (input.password !== undefined &&
-          (typeof input.password !== "string" || input.password.length < 8 ||
-            input.password.length > 128)) {
-        throw new ApiError(400, "Kata sandi harus terdiri dari 8 sampai 128 karakter.");
+      if (typeof input.password !== "string" || input.password.length < 1 ||
+          input.password.length > 128) {
+        throw new ApiError(400, "Kata sandi wajib diisi dan maksimal 128 karakter.");
       }
-      const temporaryPassword = input.password ? null : generateTemporaryPassword(input.role);
-      const password = input.password || temporaryPassword;
       const passwordSalt = randomBytes(16).toString("hex");
       const passwordHash = Buffer.from(
-        await scryptAsync(password, passwordSalt, 64),
+        await scryptAsync(input.password, passwordSalt, 64),
       ).toString("hex");
       try {
         const account = await model.createUser(schoolId, {
@@ -193,7 +183,7 @@ export function createAdminService(model) {
           passwordSalt,
           passwordHash,
         });
-        return { user: account, temporaryPassword };
+        return { user: account };
       } catch (error) {
         if (error.code === "23505") throw new ApiError(409, "Email tersebut sudah digunakan.");
         if (error.message === "CLASS_INVALID") {
@@ -208,16 +198,19 @@ export function createAdminService(model) {
         throw error;
       }
     },
-    async resetPassword(user, userId) {
+    async resetPassword(user, userId, input) {
       const schoolId = getSchoolId(user);
       assertSchoolActive(user);
       if (user.id === userId) {
         throw new ApiError(409, "Gunakan halaman Profil untuk mengubah kata sandi sendiri.");
       }
-      const temporaryPassword = generateTemporaryPassword();
+      if (typeof input?.password !== "string" || input.password.length < 1 ||
+          input.password.length > 128) {
+        throw new ApiError(400, "Kata sandi wajib diisi dan maksimal 128 karakter.");
+      }
       const passwordSalt = randomBytes(16).toString("hex");
       const passwordHash = Buffer.from(
-        await scryptAsync(temporaryPassword, passwordSalt, 64),
+        await scryptAsync(input.password, passwordSalt, 64),
       ).toString("hex");
       const reset = await model.resetUserPassword(schoolId, userId, {
         passwordSalt,
@@ -228,7 +221,7 @@ export function createAdminService(model) {
       if (!reset) {
         throw new ApiError(404, "Pengguna tidak ditemukan di sekolah ini.");
       }
-      return { temporaryPassword, resetAt: reset.resetAt };
+      return { resetAt: reset.resetAt };
     },
     async listPasswordResetLogs(user, userId) {
       if (typeof userId !== "string" || !userId) {
@@ -421,10 +414,26 @@ export function createAdminService(model) {
           !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
         throw new ApiError(400, "Nama atau alamat email tidak valid.");
       }
+      const changingPassword = input.newPassword !== undefined ||
+        input.confirmPassword !== undefined;
+      if (changingPassword &&
+          (typeof input.newPassword !== "string" || input.newPassword.length < 1 ||
+            input.newPassword.length > 128 ||
+            input.confirmPassword !== input.newPassword)) {
+        throw new ApiError(400, "Kata sandi baru wajib diisi, maksimal 128 karakter, dan konfirmasinya harus sama.");
+      }
+      const passwordSalt = changingPassword
+        ? randomBytes(16).toString("hex")
+        : null;
+      const passwordHash = changingPassword
+        ? Buffer.from(await scryptAsync(input.newPassword, passwordSalt, 64)).toString("hex")
+        : null;
       try {
         const profile = await model.updateAdminProfile(user.id, {
           fullName: input.fullName.trim(),
           email: input.email.trim().toLowerCase(),
+          passwordSalt,
+          passwordHash,
         });
         if (!profile) throw new ApiError(404, "Profil admin tidak ditemukan.");
         return { profile };

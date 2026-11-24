@@ -404,6 +404,36 @@ export function createTeacherModel(database) {
       await markCompletedExams(profile.id, new Date());
       return getExam(id, profile.id);
     },
+    async listExamActivity(examId, profile) {
+      const { rows } = await database.query(`
+        SELECT event.id, event.attempt_id AS "attemptId",
+          event.user_id AS "studentId", u.full_name AS "studentName",
+          e.id AS "examId", e.title AS "examTitle",
+          event.event_type AS "eventType",
+          event.violation_number AS "violationNumber",
+          event.question_number AS "questionNumber",
+          event.occurred_at AS "occurredAt",
+          (
+            SELECT c.name
+            FROM exam_classes ec
+            JOIN class_members cm ON cm.class_id = ec.class_id
+            JOIN classes c ON c.id = ec.class_id
+            WHERE ec.exam_id = event.exam_id AND cm.student_user_id = event.user_id
+              AND ec.school_id = event.school_id
+            ORDER BY c.name
+            LIMIT 1
+          ) AS "className"
+        FROM exam_activity_events event
+        JOIN exams e ON e.id = event.exam_id AND e.school_id = event.school_id
+        JOIN users u ON u.id = event.user_id AND u.school_id = event.school_id
+        JOIN teacher_exam_settings tes
+          ON tes.exam_id = event.exam_id AND tes.school_id = event.school_id
+        WHERE event.exam_id = $1 AND tes.teacher_id = $2
+        ORDER BY event.occurred_at DESC
+        LIMIT 200
+      `, [examId, profile.id]);
+      return rows;
+    },
     async updateExam(id, profile, input) {
       const { rows: [settings] } = await database.query(`
         SELECT exam_id FROM teacher_exam_settings

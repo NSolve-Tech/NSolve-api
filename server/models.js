@@ -190,15 +190,13 @@ export function createStudentModel(database) {
       `, [userId]);
       return row ?? null;
     },
-    async updateStudentProfile(userId, { fullName, email, passwordSalt, passwordHash }) {
+    async updateStudentProfile(userId, { fullName, email }) {
       const { rows: [row] } = await database.query(`
         UPDATE users
-        SET full_name = $2, email = $3,
-          password_salt = COALESCE($4, password_salt),
-          password_hash = COALESCE($5, password_hash)
+        SET full_name = $2, email = $3
         WHERE id = $1 AND role = 'student'
         RETURNING id
-      `, [userId, fullName, email, passwordSalt ?? null, passwordHash ?? null]);
+      `, [userId, fullName, email]);
       return row ? this.getStudentProfile(userId) : null;
     },
     async createSession({ tokenHash, userId, expiresAt, createdAt }) {
@@ -454,13 +452,22 @@ export function createStudentModel(database) {
 
         const recentCutoff = new Date(Date.parse(occurredAt) - 2500).toISOString();
         const { rows: [duplicate] } = await client.query(`
-          SELECT violation_number FROM exam_activity_events
-          WHERE exam_id = $1 AND user_id = $2 AND event_type = $3
+          SELECT id, event_type, violation_number FROM exam_activity_events
+          WHERE exam_id = $1 AND user_id = $2
+            AND (event_type = $3 OR (
+              $3 IN ('page_refresh', 'back_navigation') AND event_type = 'app_closed'
+            ))
             AND occurred_at >= $4
             AND attempt_id IS NOT DISTINCT FROM $5
           ORDER BY occurred_at DESC LIMIT 1
         `, [examId, userId, eventType, recentCutoff, attemptId ?? null]);
         if (duplicate) {
+          if (duplicate.event_type !== eventType) {
+            await client.query(
+              "UPDATE exam_activity_events SET event_type = $1 WHERE id = $2",
+              [eventType, duplicate.id],
+            );
+          }
           return {
             violationCount: attempt?.violation_count ?? duplicate.violation_number,
             lockedUntil: attempt?.locked_until ?? null,

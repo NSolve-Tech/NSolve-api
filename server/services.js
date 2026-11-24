@@ -18,6 +18,8 @@ const EXAM_ACTIVITY_TYPES = new Set([
   "fullscreen_exit",
   "print_screen",
   "app_closed",
+  "page_refresh",
+  "back_navigation",
 ]);
 
 export class ApiError extends Error {
@@ -151,9 +153,9 @@ export function createStudentService(model, {
           !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
         throw new ApiError(400, "Masukkan alamat email yang valid.");
       }
-      if (typeof password !== "string" || password.length < 8 ||
+      if (typeof password !== "string" || password.length < 1 ||
           password.length > MAX_PASSWORD_LENGTH) {
-        throw new ApiError(400, "Kata sandi harus terdiri dari 8 sampai 128 karakter.");
+        throw new ApiError(400, "Kata sandi wajib diisi dan maksimal 128 karakter.");
       }
       if (typeof schoolId !== "string" || typeof classId !== "string" ||
           !schoolId || !classId) {
@@ -229,6 +231,9 @@ export function createStudentService(model, {
     },
     async updateStudentProfile(token, input) {
       const user = await requireRole(token, ["student"]);
+      if (input?.currentPassword !== undefined || input?.newPassword !== undefined) {
+        throw new ApiError(403, "Hanya Admin yang dapat mengubah kata sandi akun.");
+      }
       if (typeof input?.fullName !== "string" ||
           input.fullName.trim().length < 2 || input.fullName.trim().length > 120) {
         throw new ApiError(400, "Nama harus terdiri dari 2 sampai 120 karakter.");
@@ -237,33 +242,10 @@ export function createStudentService(model, {
           !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
         throw new ApiError(400, "Masukkan alamat email yang valid.");
       }
-      let passwordSalt;
-      let passwordHash;
-      if (input.newPassword || input.currentPassword) {
-        if (typeof input.currentPassword !== "string" ||
-            typeof input.newPassword !== "string" ||
-            input.newPassword.length < 8 || input.newPassword.length > MAX_PASSWORD_LENGTH) {
-          throw new ApiError(400, "Kata sandi baru harus terdiri dari 8 sampai 128 karakter dan menyertakan kata sandi saat ini.");
-        }
-        const account = await model.findUserByEmail(user.email);
-        if (!account || !await safePasswordMatches(
-          input.currentPassword,
-          account.passwordSalt,
-          account.passwordHash,
-        )) {
-          throw new ApiError(403, "Kata sandi saat ini tidak sesuai.");
-        }
-        passwordSalt = randomBytes(16).toString("hex");
-        passwordHash = Buffer.from(
-          await scryptAsync(input.newPassword, passwordSalt, 64),
-        ).toString("hex");
-      }
       try {
         const profile = await model.updateStudentProfile(user.id, {
           fullName: input.fullName.trim(),
           email: input.email.trim().toLowerCase(),
-          passwordSalt,
-          passwordHash,
         });
         if (!profile) throw new ApiError(404, "Profil siswa tidak ditemukan.");
         return { profile };

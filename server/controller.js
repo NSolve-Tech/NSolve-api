@@ -153,6 +153,7 @@ export function createController(service, teacherService, adminService, cookieOp
         return sendJson(response, 200, await adminService.resetPassword(
           admin,
           decodeURIComponent(passwordResetRoute[1]),
+          await readJson(request),
         ));
       }
       const adminUserRoute = path.match(/^\/api\/admin\/users\/([^/]+)$/);
@@ -292,13 +293,16 @@ export function createController(service, teacherService, adminService, cookieOp
       }
 
       const examActionRoute = path.match(
-        /^\/api\/teacher\/exams\/([^/]+)\/(participants|publish|analytics)$/,
+        /^\/api\/teacher\/exams\/([^/]+)\/(participants|publish|analytics|activity)$/,
       );
       if (examActionRoute) {
         const examId = decodeURIComponent(examActionRoute[1]);
         const action = examActionRoute[2];
         if (method === "GET" && action === "analytics") {
           return sendJson(response, 200, await teacherService.analytics(teacher, examId));
+        }
+        if (method === "GET" && action === "activity") {
+          return sendJson(response, 200, await teacherService.listExamActivity(teacher, examId));
         }
         if (method === "POST" && action === "publish") {
           return sendJson(response, 200, await teacherService.publishExam(

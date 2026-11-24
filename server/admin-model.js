@@ -222,8 +222,8 @@ export function createAdminModel(database) {
         if (teacher) {
           await client.query(`
             UPDATE teachers SET full_name = $2, subject_id = $3, subject = $4,
-              position_title = $5 WHERE id = $1
-          `, [teacher.id, nextName, subject.id, subjectName, input.positionTitle?.trim() || "Guru"]);
+              position_title = COALESCE($5, position_title) WHERE id = $1
+          `, [teacher.id, nextName, subject.id, subjectName, input.positionTitle?.trim() || null]);
           if (Array.isArray(input.classIds)) {
             const classIds = [...new Set(input.classIds)];
             const { rows: classes } = classIds.length
@@ -700,12 +700,19 @@ export function createAdminModel(database) {
     });
   }
 
-  async function updateAdminProfile(userId, { fullName, email }) {
+  async function updateAdminProfile(userId, {
+    fullName,
+    email,
+    passwordSalt,
+    passwordHash,
+  }) {
     const { rows } = await database.query(`
-      UPDATE users SET full_name = $2, email = $3
+      UPDATE users SET full_name = $2, email = $3,
+        password_salt = COALESCE($4, password_salt),
+        password_hash = COALESCE($5, password_hash)
       WHERE id = $1 AND role = 'admin'
       RETURNING id, full_name AS "fullName", email
-    `, [userId, fullName, email]);
+    `, [userId, fullName, email, passwordSalt ?? null, passwordHash ?? null]);
     return rows[0] ?? null;
   }
 

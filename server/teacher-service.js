@@ -330,6 +330,13 @@ export function createTeacherService(model, { now = () => new Date() } = {}) {
       if (!exam) throw new ApiError(404, "Paket ujian tidak ditemukan.");
       return { exam };
     },
+    async listExamActivity(user, id) {
+      const profile = await getProfile(user);
+      if (!await model.getExam(id, profile)) {
+        throw new ApiError(404, "Paket ujian tidak ditemukan.");
+      }
+      return { events: await model.listExamActivity(id, profile) };
+    },
     async updateExam(user, id, input) {
       if (input?.status !== undefined && !["scheduled", "active"].includes(input.status)) {
         throw new ApiError(400, "Status ujian tidak valid.");
