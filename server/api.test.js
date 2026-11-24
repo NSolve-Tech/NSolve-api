@@ -1033,9 +1033,15 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   assert.equal(started.status, 201);
   const { attempt } = await started.json();
+  const invalidActivityQuestion = await postJson(
+    `${baseUrl}/api/student/exams/${exam.id}/activity`,
+    { attemptId: attempt.id, questionNumber: 3, eventType: "print_screen" },
+    { cookie: studentCookie, ...originHeaders },
+  );
+  assert.equal(invalidActivityQuestion.status, 400);
   const activityResponse = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/activity`,
-    { attemptId: attempt.id, eventType: "tab_hidden" },
+    { attemptId: attempt.id, questionNumber: 1, eventType: "tab_hidden" },
     { cookie: studentCookie, ...originHeaders },
   );
   assert.equal(activityResponse.status, 201);
@@ -1046,12 +1052,14 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   assert.equal(activityLogResponse.status, 200);
   const activityLog = await activityLogResponse.json();
   assert.equal(activityLog.events[0].eventType, "tab_hidden");
+  assert.equal(activityLog.events[0].questionNumber, 1);
   assert.equal(activityLog.events[0].studentName, "Siswa XI F 9");
   assert.equal(activityLog.sessions[0].attemptId, attempt.id);
+  assert.equal(activityLog.sessions[0].lastQuestionNumber, 1);
   assert.equal(activityLog.sessions[0].violationCount, 1);
   const secondActivity = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/activity`,
-    { attemptId: attempt.id, eventType: "window_blur" },
+    { attemptId: attempt.id, questionNumber: 2, eventType: "window_blur" },
     { cookie: studentCookie, ...originHeaders },
   );
   const freeze = await secondActivity.json();
@@ -1325,19 +1333,47 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
   );
   assert.equal(secondAttemptResponse.status, 201);
   const { attempt: secondAttempt } = await secondAttemptResponse.json();
-  for (const eventType of ["tab_hidden", "window_blur", "fullscreen_exit"]) {
-    const report = await postJson(
+  const secondStudentAnswer = await postJson(
+    `${baseUrl}/api/student/exams/${exam.id}/save-answer`,
+    {
+      attemptId: secondAttempt.id,
+      questionId: answeredQuestion.id,
+      optionId: visibleOption.id,
+    },
+    { cookie: secondStudentCookie, ...originHeaders },
+  );
+  assert.equal(secondStudentAnswer.status, 200);
+  const violationEvents = [
+    { eventType: "tab_hidden", questionNumber: 1 },
+    { eventType: "window_blur", questionNumber: 2 },
+    { eventType: "app_closed", questionNumber: 1 },
+  ];
+  let finalViolation;
+  for (const violation of violationEvents) {
+    finalViolation = await postJson(
       `${baseUrl}/api/student/exams/${exam.id}/activity`,
-      { attemptId: secondAttempt.id, eventType },
+      { attemptId: secondAttempt.id, ...violation },
       { cookie: secondStudentCookie, ...originHeaders },
     );
-    assert.equal(report.status, 201);
+    assert.equal(finalViolation.status, 201);
   }
+  const autoSubmit = await finalViolation.json();
+  assert.equal(autoSubmit.violationCount, 3);
+  assert.equal(autoSubmit.autoSubmitted, true);
+  assert.equal(autoSubmit.showScore, true);
+  const autoResultResponse = await fetch(
+    `${baseUrl}/api/student/results/${autoSubmit.resultId}`,
+    { headers: { cookie: secondStudentCookie, ...originHeaders } },
+  );
+  assert.equal(autoResultResponse.status, 200);
+  const autoResult = (await autoResultResponse.json()).result;
+  assert.equal(autoResult.unansweredCount, 1);
+  assert.equal(autoResult.score, autoResult.correctCount * 50);
   const disqualifiedQuestions = await fetch(
     `${baseUrl}/api/student/exams/${exam.id}/questions?attemptId=${secondAttempt.id}`,
     { headers: { cookie: secondStudentCookie, ...originHeaders } },
   );
-  assert.equal(disqualifiedQuestions.status, 403);
+  assert.equal(disqualifiedQuestions.status, 404);
   const disqualifiedSave = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/save-answer`,
     {
@@ -1347,28 +1383,33 @@ test("teacher role manages the chemistry SAS workflow and student access is clas
     },
     { cookie: secondStudentCookie, ...originHeaders },
   );
-  assert.equal(disqualifiedSave.status, 403);
+  assert.equal(disqualifiedSave.status, 409);
   const disqualifiedSubmit = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/submit`,
     { attemptId: secondAttempt.id },
     { cookie: secondStudentCookie, ...originHeaders },
   );
-  assert.equal(disqualifiedSubmit.status, 403);
+  assert.equal(disqualifiedSubmit.status, 200);
+  assert.equal((await disqualifiedSubmit.json()).alreadySubmitted, true);
 
   const appClosedActivity = await postJson(
     `${baseUrl}/api/student/exams/${exam.id}/activity`,
     { attemptId: secondAttempt.id, eventType: "app_closed" },
     { cookie: secondStudentCookie, ...originHeaders },
   );
-  assert.equal(appClosedActivity.status, 201);
+  assert.equal(appClosedActivity.status, 409);
   const updatedActivityLog = await fetch(`${baseUrl}/api/admin/exam-activity`, {
     headers: { cookie: adminCookie, ...originHeaders },
   });
   const updatedActivity = await updatedActivityLog.json();
-  assert.ok(updatedActivity.events.some((event) => event.eventType === "app_closed"));
+  const autoSubmittedEvent = updatedActivity.events.find((event) =>
+    event.attemptId === secondAttempt.id && event.violationNumber === 3);
+  assert.equal(autoSubmittedEvent.eventType, "app_closed");
+  assert.equal(autoSubmittedEvent.questionNumber, 1);
+  assert.equal(autoSubmittedEvent.autoSubmitted, true);
   const closedSession = updatedActivity.sessions.find((session) =>
     session.attemptId === secondAttempt.id);
-  assert.equal(closedSession.lastEventType, "app_closed");
+  assert.equal(closedSession, undefined);
 
   await database.query(
     "UPDATE teacher_exam_settings SET show_score = FALSE WHERE exam_id = $1",

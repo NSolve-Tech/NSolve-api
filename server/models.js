@@ -348,30 +348,33 @@ export function createStudentModel(database) {
       });
     },
     async saveAnswer({ attemptId, examId, userId, questionId, optionId, answeredAt }) {
-      const { rows: [question] } = await database.query(`
-        SELECT q.id
-        FROM exam_questions q
-        JOIN exam_attempts a ON a.exam_id = q.exam_id
-        WHERE q.id = $1 AND a.id = $2 AND a.user_id = $3 AND a.status = 'in_progress'
-          AND a.disqualified_at IS NULL
-          AND (a.locked_until IS NULL OR a.locked_until <= NOW())
-      `, [questionId, attemptId, userId]);
-      if (!question) return false;
-      if (optionId !== null) {
-        const { rows: [option] } = await database.query(
-          "SELECT id FROM exam_options WHERE id = $1 AND question_id = $2",
-          [optionId, questionId],
-        );
-        if (!option) return false;
-      }
-      await database.query(`
-        INSERT INTO exam_answers (id, attempt_id, question_id, selected_option_id, answered_at)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (attempt_id, question_id)
-        DO UPDATE SET selected_option_id = EXCLUDED.selected_option_id,
-          answer_text = NULL, answered_at = EXCLUDED.answered_at
-      `, [randomUUID(), attemptId, questionId, optionId, answeredAt]);
-      return true;
+      return withTransaction(database, async (client) => {
+        const { rows: [question] } = await client.query(`
+          SELECT q.id
+          FROM exam_questions q
+          JOIN exam_attempts a ON a.exam_id = q.exam_id
+          WHERE q.id = $1 AND a.id = $2 AND a.user_id = $3 AND a.status = 'in_progress'
+            AND a.disqualified_at IS NULL
+            AND (a.locked_until IS NULL OR a.locked_until <= NOW())
+          FOR UPDATE OF a
+        `, [questionId, attemptId, userId]);
+        if (!question) return false;
+        if (optionId !== null) {
+          const { rows: [option] } = await client.query(
+            "SELECT id FROM exam_options WHERE id = $1 AND question_id = $2",
+            [optionId, questionId],
+          );
+          if (!option) return false;
+        }
+        await client.query(`
+          INSERT INTO exam_answers (id, attempt_id, question_id, selected_option_id, answered_at)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (attempt_id, question_id)
+          DO UPDATE SET selected_option_id = EXCLUDED.selected_option_id,
+            answer_text = NULL, answered_at = EXCLUDED.answered_at
+        `, [randomUUID(), attemptId, questionId, optionId, answeredAt]);
+        return true;
+      });
     },
     async getAttempt(attemptId, examId, userId) {
       const { rows: [row] } = await database.query(`
@@ -409,7 +412,14 @@ export function createStudentModel(database) {
         disqualifiedAt: row.disqualified_at,
       } : null;
     },
-    async recordExamActivity({ examId, attemptId, userId, eventType, occurredAt }) {
+    async recordExamActivity({
+      examId,
+      attemptId,
+      questionNumber,
+      userId,
+      eventType,
+      occurredAt,
+    }) {
       return withTransaction(database, async (client) => {
         const { rows: [exam] } = await client.query(`
           SELECT e.school_id
@@ -433,6 +443,13 @@ export function createStudentModel(database) {
           `, [attemptId, examId, userId]);
           if (!row || row.status !== "in_progress") throw new Error("ATTEMPT_INVALID");
           attempt = row;
+          if (questionNumber !== undefined) {
+            const { rows: [{ count }] } = await client.query(`
+              SELECT COUNT(*)::INTEGER AS count
+              FROM exam_questions WHERE exam_id = $1
+            `, [examId]);
+            if (questionNumber > count) throw new Error("QUESTION_NUMBER_INVALID");
+          }
         }
 
         const recentCutoff = new Date(Date.parse(occurredAt) - 2500).toISOString();
@@ -480,11 +497,11 @@ export function createStudentModel(database) {
         await client.query(`
           INSERT INTO exam_activity_events (
             id, exam_id, attempt_id, user_id, school_id, event_type,
-            violation_number, occurred_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            violation_number, question_number, occurred_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         `, [
           randomUUID(), examId, attemptId ?? null, userId, exam.school_id,
-          eventType, violationCount, occurredAt,
+          eventType, violationCount, questionNumber ?? null, occurredAt,
         ]);
         return { violationCount, lockedUntil, disqualified, duplicate: false };
       });

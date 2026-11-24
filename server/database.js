@@ -25,6 +25,7 @@ const migrations = [
   { version: 17, path: "migrations/017_exam_exit_activity.sql" },
   { version: 18, path: "migrations/018_sman2_xi_class_names.sql" },
   { version: 19, path: "migrations/019_remove_question_bank.sql" },
+  { version: 20, path: "migrations/020_exam_activity_question_number.sql" },
 ];
 
 export const latestSchemaVersion = migrations.at(-1).version;

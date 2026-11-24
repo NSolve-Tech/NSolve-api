@@ -325,19 +325,39 @@ export function createStudentService(model, {
           (typeof input.attemptId !== "string" || !input.attemptId)) {
         throw new ApiError(400, "ID percobaan ujian tidak valid.");
       }
+      if (input.questionNumber !== undefined &&
+          (!input.attemptId || !Number.isInteger(input.questionNumber) ||
+            input.questionNumber < 1)) {
+        throw new ApiError(400, "Nomor soal tidak valid.");
+      }
       try {
         const activity = await model.recordExamActivity({
           examId,
           attemptId: input.attemptId,
+          questionNumber: input.questionNumber,
           userId: user.id,
           eventType: input.eventType,
           occurredAt: now().toISOString(),
         });
         if (!activity) throw new ApiError(404, "Ujian tidak tersedia untuk kelas Anda.");
+        if (activity.disqualified && input.attemptId) {
+          const attempt = await model.getAttempt(input.attemptId, examId, user.id);
+          if (!attempt) throw new ApiError(409, "Percobaan ujian tidak lagi tersedia.");
+          const result = await submit(attempt);
+          return {
+            ...activity,
+            autoSubmitted: true,
+            resultId: result.id,
+            showScore: result.showScore !== false,
+          };
+        }
         return activity;
       } catch (error) {
         if (error.message === "ATTEMPT_INVALID") {
           throw new ApiError(409, "Percobaan ujian tidak lagi aktif.");
+        }
+        if (error.message === "QUESTION_NUMBER_INVALID") {
+          throw new ApiError(400, "Nomor soal tidak sesuai dengan ujian ini.");
         }
         throw error;
       }

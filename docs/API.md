@@ -113,7 +113,7 @@ Grades the attempt once and returns `{ "result": ..., "alreadySubmitted": false 
 
 ### `POST /api/student/exams/:id/activity`
 
-Reports best-effort browser activity such as `tab_hidden`, `window_blur`, `fullscreen_exit`, and `print_screen`. During an active attempt, the second recorded violation freezes the attempt for 30 seconds; the third marks it for administrator review. Browser events cannot guarantee detection of screenshots or all application switching.
+Reports best-effort browser activity such as `tab_hidden`, `window_blur`, `fullscreen_exit`, and `print_screen`. During an active attempt, an optional `questionNumber` records the question shown when the event occurred. The second recorded violation freezes the attempt for 30 seconds. The third automatically submits and grades saved answers, then returns `autoSubmitted`, `resultId`, and `showScore`. Events reported before an attempt starts have no question number and do not trigger auto-submission. Browser events cannot guarantee detection of screenshots or all application switching.
 
 ## Results and grades
 
@@ -210,7 +210,7 @@ Associates an approved request with an eligible published remedial exam.
 - `GET /api/admin/exams` includes each exam's saved token and publish timestamp.
 - `PUT /api/admin/exams/:id/token` changes a published exam's entry token using the same format and uniqueness rules as the teacher endpoint.
 - `PUT /api/admin/teachers/:teacherId/classes` replaces that teacher's class assignments. Body: `{ "classIds": ["class-id"] }`.
-- `GET /api/admin/exam-activity` returns the latest reported student activity events for the admin's school.
+- `GET /api/admin/exam-activity` returns the latest reported student activity events for the admin's school, including question numbers when reported and whether a third violation caused automatic submission.
 
 ### `GET /health`
 

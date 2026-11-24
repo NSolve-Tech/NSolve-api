@@ -74,7 +74,17 @@ export function createAdminModel(database) {
       SELECT event.id, event.exam_id AS "examId", event.attempt_id AS "attemptId",
         event.user_id AS "studentId", u.full_name AS "studentName",
         e.title AS "examTitle", event.event_type AS "eventType",
-        event.violation_number AS "violationNumber", event.occurred_at AS "occurredAt",
+        event.violation_number AS "violationNumber",
+        event.question_number AS "questionNumber",
+        (
+          event.attempt_id IS NOT NULL
+          AND event.violation_number >= 3
+          AND EXISTS (
+            SELECT 1 FROM exam_results result
+            WHERE result.attempt_id = event.attempt_id
+          )
+        ) AS "autoSubmitted",
+        event.occurred_at AS "occurredAt",
         (
           SELECT c.name
           FROM class_members cm
@@ -109,12 +119,14 @@ export function createAdminModel(database) {
         a.started_at AS "startedAt", a.expires_at AS "expiresAt",
         a.violation_count AS "violationCount", a.locked_until AS "lockedUntil",
         a.disqualified_at AS "disqualifiedAt",
-        latest.event_type AS "lastEventType", latest.occurred_at AS "lastEventAt"
+        latest.event_type AS "lastEventType",
+        latest.question_number AS "lastQuestionNumber",
+        latest.occurred_at AS "lastEventAt"
       FROM exam_attempts a
       JOIN users u ON u.id = a.user_id AND u.school_id = a.school_id
       JOIN exams e ON e.id = a.exam_id AND e.school_id = a.school_id
       LEFT JOIN LATERAL (
-        SELECT event_type, occurred_at
+        SELECT event_type, question_number, occurred_at
         FROM exam_activity_events
         WHERE attempt_id = a.id
         ORDER BY occurred_at DESC
